@@ -15,11 +15,9 @@
 ```python
 # 支持的大模型供应商
 chat_model_providers = {
-    'zhipuai': lambda: ZhipuAIClient(),      # 智谱AI
     'openai': lambda: OpenAIClient(),        # OpenAI
     'deepseek': lambda: DeepSeekClient(),    # DeepSeek
     'qwen': lambda: QwenClient(),           # 通义千问
-    'ollama': lambda : OllamaClient()       # Ollama
 }
 ```
 
@@ -33,9 +31,7 @@ chat_model_providers = {
 |------|---------|---------|----------|
 | **OpenAI** | `OPENAI_API_KEY` | `OPENAI_API_BASE_URL` | `OPENAI_API_MODEL` |
 | **DeepSeek** | `DEEPSEEK_API_KEY` | `DEEPSEEK_API_BASE_URL` | `DEEPSEEK_API_MODEL` |
-| **智谱AI** | `ZHIPUAI_API_KEY` | - | `ZHIPUAI_API_MODEL` |
 | **通义千问** | `QWEN_API_KEY` | `QWEN_API_BASE_URL` | `QWEN_API_MODEL` |
-| **Ollama** | - | `OLLAMA_API_BASE_URL` | `OLLAMA_API_MODEL` |
 
 ### 3. 代码审查提示词模板
 

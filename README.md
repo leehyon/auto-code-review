@@ -7,7 +7,7 @@
 ## 功能
 
 - 🚀 多模型灵活切换
-  - 全面兼容 **DeepSeek、ZhipuAI、OpenAI、通义千问、Ollama** 想用哪个，用哪个！轻松上手，自由切换。
+  - 全面兼容 **DeepSeek、OpenAI、通义千问** 想用哪个，用哪个！轻松上手，自由切换。
 - 📢 消息实时送达
   - 审查结果 **一键推送** 到 **钉钉、企业微信、飞书**  及时响应，代码问题无所遁形！
 - 📅 自动生成开发日报
@@ -119,7 +119,7 @@ cp conf/.env.dist conf/.env
 - 编辑 conf/.env 文件，配置以下关键参数：
 
 ```bash
-#大模型供应商配置,支持 zhipuai , openai , deepseek 和 ollama
+#大模型供应商配置,支持 openai , deepseek 和 qwen
 LLM_PROVIDER=deepseek
 
 #DeepSeek
