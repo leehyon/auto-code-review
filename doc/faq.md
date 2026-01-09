@@ -70,21 +70,6 @@ DINGTALK_WEBHOOK_example_gitlab_com=https://oapi.dingtalk.com/robot/send?access_
 
 **优先级：** 优先根据仓库名称匹配webhook地址，其次根据Gitlab服务器地址匹配webhook地址，如果都没有匹配到，则最后使用默认服务器地址
 
-### docker 容器部署时，连接Ollama失败
-
-**可能原因**
-
-配置127.0.0.1:11434连接Ollama。由于docker容器的网络模式为bridge，容器内的127.0.0.1并不是宿主机的127.0.0.1，所以连接失败。
-
-**解决方案**
-
-在.env文件中修改OLLAMA_API_BASE_URL为宿主机的IP地址或外网IP地址。同时要配置Ollama服务绑定到宿主机的IP地址（或0.0.0.0）。
-
-```
-OLLAMA_API_BASE_URL=http://127.0.0.1:11434  # 错误
-OLLAMA_API_BASE_URL=http://{宿主机/外网IP地址}:11434  # 正确
-```
-
 ### 如何使用Redis Queue队列？
 
 **操作步骤**

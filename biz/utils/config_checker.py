@@ -15,14 +15,12 @@ REQUIRED_ENV_VARS = [
 ]
 
 # 允许的 LLM 供应商
-LLM_PROVIDERS = {"zhipuai", "openai", "deepseek", "ollama", "qwen"}
+LLM_PROVIDERS = {"openai", "deepseek", "qwen"}
 
 # 每种供应商必须配置的键
 LLM_REQUIRED_KEYS = {
-    "zhipuai": ["ZHIPUAI_API_KEY", "ZHIPUAI_API_MODEL"],
     "openai": ["OPENAI_API_KEY", "OPENAI_API_MODEL"],
     "deepseek": ["DEEPSEEK_API_KEY", "DEEPSEEK_API_MODEL"],
-    "ollama": ["OLLAMA_API_BASE_URL", "OLLAMA_API_MODEL"],
     "qwen": ["QWEN_API_KEY", "QWEN_API_MODEL"],
 }
 
