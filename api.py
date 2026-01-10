@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 
-load_dotenv("conf/.env")
+load_dotenv("config/.env")
 
 import atexit
 import json
@@ -8,34 +8,192 @@ import os
 import traceback
 from datetime import datetime
 from urllib.parse import urlparse
+import pandas as pd
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
+import os
 
-from biz.gitlab.webhook_handler import slugify_url
-from biz.queue.worker import handle_merge_request_event, handle_push_event, handle_github_pull_request_event, \
-    handle_github_push_event
-from biz.service.review_service import ReviewService
-from biz.utils.im import notifier
-from biz.utils.log import logger
-from biz.utils.queue import handle_queue
-from biz.utils.reporter import Reporter
+from src.gitlab.webhook_handler import slugify_url
+from src.queue.worker import handle_merge_request_event, handle_push_event, handle_github_pull_request_event, \
+    handle_github_push_event, handle_gitea_push_event, handle_gitea_pull_request_event
+from src.service.review_service import ReviewService
+from src.utils.messaging import notifier
+from src.utils.log import logger
+from src.utils.queue import handle_queue
+from src.utils.reporter import Reporter
 
-from biz.utils.config_checker import check_config
+from src.utils.config_checker import check_config
 
-api_app = Flask(__name__)
+api_app = Flask(__name__, static_folder='web', static_url_path='')
 
 push_review_enabled = os.environ.get('PUSH_REVIEW_ENABLED', '0') == '1'
 
 
 @api_app.route('/')
 def home():
-    return """<h2>The code review api server is running.</h2>
-              <p>GitHub project address: <a href="https://github.com/sunmh207/AI-Codereview-Gitlab" target="_blank">
-              https://github.com/sunmh207/AI-Codereview-Gitlab</a></p>
-              <p>Gitee project address: <a href="https://gitee.com/sunminghui/ai-codereview-gitlab" target="_blank">https://gitee.com/sunminghui/ai-codereview-gitlab</a></p>
-              """
+    return "<h2>The server is running.</h2>"
+
+
+@api_app.route('/api/review/logs', methods=['GET'])
+def get_review_logs():
+    """获取审查日志数据"""
+    try:
+        # 获取查询参数
+        review_type = request.args.get('type', 'mr')  # 'mr' 或 'push'
+        authors = request.args.getlist('authors') if request.args.get('authors') else None
+        project_names = request.args.getlist('project_names') if request.args.get('project_names') else None
+        
+        # 时间范围
+        updated_at_gte = request.args.get('updated_at_gte')
+        updated_at_lte = request.args.get('updated_at_lte')
+        
+        if updated_at_gte:
+            updated_at_gte = int(updated_at_gte)
+        else:
+            updated_at_gte = None
+            
+        if updated_at_lte:
+            updated_at_lte = int(updated_at_lte)
+        else:
+            updated_at_lte = None
+        
+        # 根据类型获取数据
+        if review_type == 'push':
+            df = ReviewService().get_push_review_logs(
+                authors=authors,
+                project_names=project_names,
+                updated_at_gte=updated_at_gte,
+                updated_at_lte=updated_at_lte
+            )
+        else:
+            df = ReviewService().get_mr_review_logs(
+                authors=authors,
+                project_names=project_names,
+                updated_at_gte=updated_at_gte,
+                updated_at_lte=updated_at_lte
+            )
+        
+        # 转换数据格式
+        if df.empty:
+            return jsonify({
+                'data': [],
+                'total': 0,
+                'average_score': 0
+            })
+        
+        # 格式化时间戳
+        if 'updated_at' in df.columns:
+            df['updated_at'] = df['updated_at'].apply(
+                lambda ts: datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                if isinstance(ts, (int, float)) else ts
+            )
+        
+        # 格式化代码变更
+        if 'additions' in df.columns and 'deletions' in df.columns:
+            df['delta'] = df.apply(
+                lambda row: f"+{int(row['additions'])}  -{int(row['deletions'])}"
+                if not pd.isna(row['additions']) and not pd.isna(row['deletions'])
+                else "",
+                axis=1
+            )
+        
+        # 转换为字典列表
+        records = df.to_dict(orient='records')
+        
+        # 计算统计信息
+        total = len(records)
+        average_score = df['score'].mean() if 'score' in df.columns and not df.empty else 0
+        
+        return jsonify({
+            'data': records,
+            'total': total,
+            'average_score': float(average_score) if not pd.isna(average_score) else 0
+        })
+    except Exception as e:
+        logger.error(f"Failed to get review logs: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_app.route('/api/review/stats', methods=['GET'])
+def get_review_stats():
+    """获取统计数据用于图表"""
+    try:
+        review_type = request.args.get('type', 'mr')
+        authors = request.args.getlist('authors') if request.args.get('authors') else None
+        project_names = request.args.getlist('project_names') if request.args.get('project_names') else None
+        updated_at_gte = request.args.get('updated_at_gte')
+        updated_at_lte = request.args.get('updated_at_lte')
+        
+        if updated_at_gte:
+            updated_at_gte = int(updated_at_gte)
+        else:
+            updated_at_gte = None
+            
+        if updated_at_lte:
+            updated_at_lte = int(updated_at_lte)
+        else:
+            updated_at_lte = None
+        
+        if review_type == 'push':
+            df = ReviewService().get_push_review_logs(
+                authors=authors,
+                project_names=project_names,
+                updated_at_gte=updated_at_gte,
+                updated_at_lte=updated_at_lte
+            )
+        else:
+            df = ReviewService().get_mr_review_logs(
+                authors=authors,
+                project_names=project_names,
+                updated_at_gte=updated_at_gte,
+                updated_at_lte=updated_at_lte
+            )
+        
+        if df.empty:
+            return jsonify({
+                'project_counts': [],
+                'project_scores': [],
+                'author_counts': [],
+                'author_scores': [],
+                'author_code_lines': []
+            })
+        
+        # 项目提交次数
+        project_counts = df['project_name'].value_counts().reset_index()
+        project_counts.columns = ['name', 'count']
+        
+        # 项目平均分数
+        project_scores = df.groupby('project_name')['score'].mean().reset_index()
+        project_scores.columns = ['name', 'average_score']
+        
+        # 人员提交次数
+        author_counts = df['author'].value_counts().reset_index()
+        author_counts.columns = ['name', 'count']
+        
+        # 人员平均分数
+        author_scores = df.groupby('author')['score'].mean().reset_index()
+        author_scores.columns = ['name', 'average_score']
+        
+        # 人员代码行数
+        author_code_lines = []
+        if 'additions' in df.columns and 'deletions' in df.columns:
+            df['total_lines'] = df['additions'] + df['deletions']
+            author_code_lines_df = df.groupby('author')['total_lines'].sum().reset_index()
+            author_code_lines_df.columns = ['name', 'code_lines']
+            author_code_lines = author_code_lines_df.to_dict(orient='records')
+        
+        return jsonify({
+            'project_counts': project_counts.to_dict(orient='records'),
+            'project_scores': project_scores.to_dict(orient='records'),
+            'author_counts': author_counts.to_dict(orient='records'),
+            'author_scores': author_scores.to_dict(orient='records'),
+            'author_code_lines': author_code_lines
+        })
+    except Exception as e:
+        logger.error(f"Failed to get review stats: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @api_app.route('/review/daily_report', methods=['GET'])
@@ -107,21 +265,44 @@ def setup_scheduler():
 # 处理 GitLab Merge Request Webhook
 @api_app.route('/review/webhook', methods=['POST'])
 def handle_webhook():
+    # 记录请求头信息，用于调试
+    logger.debug(f'Request headers: {dict(request.headers)}')
+    logger.debug(f'Content-Type: {request.content_type}')
+    
     # 获取请求的JSON数据
+    # 尝试多种方式获取 JSON 数据
+    data = None
     if request.is_json:
         data = request.get_json()
-        if not data:
-            return jsonify({"error": "Invalid JSON"}), 400
-
-        # 判断是GitLab还是GitHub的webhook
-        webhook_source = request.headers.get('X-GitHub-Event')
-
-        if webhook_source:  # GitHub webhook
-            return handle_github_webhook(webhook_source, data)
-        else:  # GitLab webhook
-            return handle_gitlab_webhook(data)
     else:
-        return jsonify({'message': 'Invalid data format'}), 400
+        # 如果 Content-Type 不是 application/json，尝试直接解析
+        try:
+            if request.data:
+                data = json.loads(request.data)
+                logger.info('Parsed JSON from request.data')
+        except Exception as e:
+            logger.error(f'Failed to parse JSON: {str(e)}')
+            return jsonify({"error": f"Invalid JSON format: {str(e)}"}), 400
+    
+    if not data:
+        logger.error('No data found in request')
+        return jsonify({"error": "Invalid JSON or empty data"}), 400
+
+    # 判断 webhook 来源
+    # 注意：Gitea 为了兼容性会同时发送 X-GitHub-Event 和 X-Gitea-Event
+    # 所以需要优先检查 X-Gitea-Event（如果存在，一定是 Gitea）
+    github_event = request.headers.get('X-GitHub-Event')
+    gitea_event = request.headers.get('X-Gitea-Event')
+    
+    logger.debug(f'GitHub event: {github_event}, Gitea event: {gitea_event}')
+
+    # 优先识别 Gitea（因为 Gitea 会同时发送两种 header，但 GitHub 不会发送 Gitea header）
+    if gitea_event:  # Gitea webhook（优先）
+        return handle_gitea_webhook(gitea_event, data)
+    elif github_event:  # GitHub webhook
+        return handle_github_webhook(github_event, data)
+    else:  # GitLab webhook（默认）
+        return handle_gitlab_webhook(data)
 
 
 def handle_github_webhook(event_type, data):
@@ -201,6 +382,76 @@ def handle_gitlab_webhook(data):
             {'message': f'Request received(object_kind={object_kind}), will process asynchronously.'}), 200
     else:
         error_message = f'Only merge_request and push events are supported (both Webhook and System Hook), but received: {object_kind}.'
+        logger.error(error_message)
+        return jsonify(error_message), 400
+
+
+def handle_gitea_webhook(event_type, data):
+    logger.info(f'Processing Gitea webhook, event_type: {event_type}')
+    
+    # 获取 Gitea 配置
+    gitea_token = os.getenv('GITEA_ACCESS_TOKEN') or request.headers.get('X-Gitea-Token')
+    if not gitea_token:
+        error_msg = 'Missing Gitea access token. Please set GITEA_ACCESS_TOKEN environment variable or provide X-Gitea-Token header.'
+        logger.error(error_msg)
+        return jsonify({'message': error_msg}), 400
+
+    # 获取 Gitea URL
+    gitea_url = os.getenv('GITEA_URL') or request.headers.get('X-Gitea-Instance')
+    if not gitea_url:
+        # 从 payload 中提取
+        repository = data.get('repository', {})
+        logger.debug(f'Repository data: {repository}')
+        if repository:
+            html_url = repository.get('html_url', '')
+            logger.debug(f'HTML URL from repository: {html_url}')
+            if html_url:
+                try:
+                    parsed_url = urlparse(html_url)
+                    gitea_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+                    logger.info(f'Extracted Gitea URL from payload: {gitea_url}')
+                except Exception as e:
+                    error_msg = f"Failed to parse repository URL: {str(e)}"
+                    logger.error(error_msg)
+                    return jsonify({"error": error_msg}), 400
+        if not gitea_url:
+            error_msg = 'Missing Gitea URL. Please set GITEA_URL environment variable, provide X-Gitea-Instance header, or ensure repository.html_url is present in payload.'
+            logger.error(error_msg)
+            logger.debug(f'Payload keys: {list(data.keys())}')
+            return jsonify({'message': error_msg}), 400
+
+    # URL Slug 用于队列隔离和日志标识
+    gitea_url_slug = slugify_url(gitea_url)
+
+    logger.info(f'Received Gitea event: {event_type}')
+    logger.info(f'Gitea URL: {gitea_url}')
+    logger.debug(f'Payload: {json.dumps(data, ensure_ascii=False)}')
+
+    # Push 事件优先级更高，先处理 Push
+    if event_type == "push":
+        handle_queue(handle_gitea_push_event, data, gitea_token, gitea_url, gitea_url_slug)
+        return jsonify(
+            {'message': f'Gitea request received(event_type={event_type}), will process asynchronously.'}), 200
+    elif event_type == "pull_request":
+        # 只处理 opened 和 synchronize action
+        action = data.get('action', '')
+        logger.debug(f'Pull Request action: {action}')
+        if action not in ['opened', 'synchronize']:
+            logger.info(f"Gitea Pull Request event, action={action}, ignored.")
+            return jsonify(
+                {'message': f'Gitea Pull Request event with action={action} is ignored, only opened and synchronize are supported.'}), 200
+        handle_queue(handle_gitea_pull_request_event, data, gitea_token, gitea_url, gitea_url_slug)
+        return jsonify(
+            {'message': f'Gitea request received(event_type={event_type}), will process asynchronously.'}), 200
+    elif event_type == "issue_comment":
+        # issue_comment 事件：当 Issue 或 PR 上添加评论时触发
+        # 由于我们的系统会自动在 Issue 上添加评论，Gitea 会发送这个 webhook
+        # 我们不需要处理这个事件，静默忽略即可
+        logger.debug(f'Gitea issue_comment event received, ignored (auto-generated by our system).')
+        return jsonify(
+            {'message': f'Gitea issue_comment event received and ignored (auto-generated by review system).'}), 200
+    else:
+        error_message = f'Only pull_request, push, and issue_comment events are supported for Gitea webhook, but received: {event_type}.'
         logger.error(error_message)
         return jsonify(error_message), 400
 
