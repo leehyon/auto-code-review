@@ -10,8 +10,8 @@ services:
       - "5002:5002"
     volumes:
       - ./data:/app/data
-      - ./log:/app/log
-      - ./conf/prompt_templates.yml:/app/conf/prompt_templates.yml
+      - ./logs:/app/logs
+      - ./config/prompt_templates.yml:/app/config/prompt_templates.yml
     env_file:
-      - ./conf/.env
+      - ./config/.env
     restart: unless-stopped

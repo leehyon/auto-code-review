@@ -13,19 +13,21 @@ COPY requirements.txt .
 # 使用国内镜像源安装依赖，增加超时时间和重试机制
 RUN pip install --no-cache-dir --timeout 300 --retries 3 -i https://pypi.tuna.tsinghua.edu.cn/simple/ -r requirements.txt
 
-RUN mkdir -p log data conf
-COPY biz ./biz
+RUN mkdir -p logs data config web
+COPY src ./src
 COPY api.py ./api.py
 COPY ui.py ./ui.py
-COPY conf/prompt_templates.yml ./conf/prompt_templates.yml
+COPY ui_server.py ./ui_server.py
+COPY web ./web
+COPY config/prompt_templates.yml ./config/prompt_templates.yml
 
 # 使用 supervisord 作为启动命令
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
 
 FROM base AS app
-COPY conf/supervisord.app.conf /etc/supervisor/conf.d/supervisord.conf
+COPY config/supervisord.app.conf /etc/supervisor/conf.d/supervisord.conf
 # 暴露 Flask 和 Streamlit 的端口
 EXPOSE 5001 5002
 
 FROM base AS worker
-COPY ./conf/supervisord.worker.conf /etc/supervisor/conf.d/supervisord.conf
+COPY ./config/supervisord.worker.conf /etc/supervisor/conf.d/supervisord.conf

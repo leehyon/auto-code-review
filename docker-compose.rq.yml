@@ -11,9 +11,9 @@ services:
       - "5002:5002"
     volumes:
       - data:/app/data
-      - log:/app/log
+      - log:/app/logs
     env_file:
-      - ./conf/.env
+      - ./config/.env
     depends_on:
       redis:
         condition: service_started
@@ -28,7 +28,7 @@ services:
     volumes_from:
       - app
     env_file:
-      - ./conf/.env
+      - ./config/.env
     # environment:
     #   - WORKER_QUEUE=git_test_com
     depends_on:
