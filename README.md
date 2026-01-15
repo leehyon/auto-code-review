@@ -173,7 +173,7 @@ docker-compose up -d
 
 ```bash
 git clone https://github.com/spherical-up/Easy-AI-CodeReview
-cd AI-Codereview-Gitlab
+cd Easy-AI-CodeReview
 ```
 
 **2. 安装依赖**
