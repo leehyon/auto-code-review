@@ -17,7 +17,8 @@ import os
 
 from src.gitlab.webhook_handler import slugify_url
 from src.queue.worker import handle_merge_request_event, handle_push_event, handle_github_pull_request_event, \
-    handle_github_push_event, handle_gitea_push_event, handle_gitea_pull_request_event
+    handle_github_push_event, handle_gitea_push_event, handle_gitea_pull_request_event, \
+    handle_bitbucket_push_event, handle_bitbucket_pull_request_event
 from src.service.review_service import ReviewService
 from src.utils.messaging import notifier
 from src.utils.log import logger
@@ -293,6 +294,8 @@ def handle_webhook():
     # 所以需要优先检查 X-Gitea-Event（如果存在，一定是 Gitea）
     github_event = request.headers.get('X-GitHub-Event')
     gitea_event = request.headers.get('X-Gitea-Event')
+    # Bitbucket Server / Data Center 使用 `X-Event-Key` header
+    bitbucket_event = request.headers.get('X-Event-Key')
     
     logger.debug(f'GitHub event: {github_event}, Gitea event: {gitea_event}')
 
@@ -301,6 +304,8 @@ def handle_webhook():
         return handle_gitea_webhook(gitea_event, data)
     elif github_event:  # GitHub webhook
         return handle_github_webhook(github_event, data)
+    elif bitbucket_event:
+        return handle_bitbucket_webhook(bitbucket_event, data)
     else:  # GitLab webhook（默认）
         return handle_gitlab_webhook(data)
 
@@ -384,6 +389,70 @@ def handle_gitlab_webhook(data):
         error_message = f'Only merge_request and push events are supported (both Webhook and System Hook), but received: {object_kind}.'
         logger.error(error_message)
         return jsonify(error_message), 400
+
+
+def handle_bitbucket_webhook(event_key: str, data: dict):
+    """
+    处理 Bitbucket Server / Data Center 的 webhook，基于 `X-Event-Key`。
+    常见 event_key: repo:refs_changed (push), pr:opened, pr:from_ref_updated 等
+    """
+    logger.info(f'Processing Bitbucket event: {event_key}')
+
+    # 获取 Bitbucket URL
+    bitbucket_url = os.getenv('BITBUCKET_URL') or request.headers.get('X-Bitbucket-Instance')
+    if not bitbucket_url:
+        # 从 payload 中提取 repository 链接
+        repository = data.get('repository', {})
+        links = repository.get('links', {})
+        self_links = links.get('self', []) if isinstance(links, dict) else []
+        html_url = ''
+        if self_links and isinstance(self_links, list):
+            html_url = self_links[0].get('href', '')
+        # 备用字段
+        if not html_url:
+            html_url = repository.get('links', {}).get('clone', [{}])[0].get('href', '') if repository.get('links') else ''
+
+        if not html_url:
+            return jsonify({'message': 'Missing Bitbucket URL'}), 400
+        try:
+            parsed_url = urlparse(html_url)
+            bitbucket_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        except Exception as e:
+            return jsonify({"error": f"Failed to parse repository URL: {str(e)}"}), 400
+
+    # 获取 Token
+    bitbucket_token = os.getenv('BITBUCKET_ACCESS_TOKEN') or request.headers.get('X-Bitbucket-Token')
+    if not bitbucket_token:
+        return jsonify({'message': 'Missing Bitbucket access token'}), 400
+
+    bitbucket_url_slug = slugify_url(bitbucket_url)
+
+    # 处理 push / refs_changed
+    if event_key and event_key.startswith('repo:') and ('refs_changed' in event_key or 'push' in event_key):
+        handle_queue(handle_bitbucket_push_event, data, bitbucket_token, bitbucket_url, bitbucket_url_slug)
+        return jsonify({'message': f'Request received(event_key={event_key}), will process asynchronously.'}), 200
+
+    # 处理 PR 相关事件，Bitbucket 的 event_key 通常以 pr: 开头
+    if event_key and event_key.startswith('pr:'):
+        # Map Bitbucket PR event keys to action
+        action_map = {
+            'pr:opened': 'opened',
+            'pr:from_ref_updated': 'synchronize',
+            'pr:edited': 'update',
+            'pr:declined': 'closed',
+            'pr:merged': 'merged'
+        }
+        action = action_map.get(event_key, '')
+        # 将 action 放入 payload 中以便 handler 使用（兼容现有逻辑）
+        if isinstance(data, dict):
+            data.setdefault('action', action)
+
+        handle_queue(handle_bitbucket_pull_request_event, data, bitbucket_token, bitbucket_url, bitbucket_url_slug)
+        return jsonify({'message': f'Request received(event_key={event_key}), will process asynchronously.'}), 200
+
+    error_message = f'Only pull request and push events are supported for Bitbucket webhook, but received: {event_key}.'
+    logger.error(error_message)
+    return jsonify(error_message), 400
 
 
 def handle_gitea_webhook(event_type, data):
