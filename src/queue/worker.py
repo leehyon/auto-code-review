@@ -599,10 +599,26 @@ def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str
         handler.add_pull_request_notes(f'Auto Review Result: \n{review_result}')
 
         pull_request = webhook_data.get('pullRequest') or webhook_data.get('pull_request') or {}
-        repository = webhook_data.get('repository', {})
-        project_name = repository.get('name') or repository.get('slug') or ''
+        # Prefer repository info from pull request refs (fromRef / toRef), fallback to top-level repository
+        pr_repo = {}
+        if isinstance(pull_request, dict):
+            from_ref = pull_request.get('fromRef') or {}
+            to_ref = pull_request.get('toRef') or {}
+            pr_repo = from_ref.get('repository') or to_ref.get('repository') or {}
+        repository = pr_repo or webhook_data.get('repository', {}) or {}
+        project_name = ''
+        if isinstance(repository, dict):
+            project_name = (repository.get('project', {}) or {}).get('name') or repository.get('name') or repository.get('slug') or (repository.get('project', {}) or {}).get('key') or ''
+
+        # Extract author: prefer actor/sender, then fall back to pull request author info
         sender = webhook_data.get('actor') or webhook_data.get('sender') or {}
-        author = sender.get('name') if isinstance(sender, dict) else ''
+        author = ''
+        if isinstance(sender, dict):
+            author = sender.get('name') or sender.get('slug') or sender.get('displayName') or sender.get('username') or ''
+        if not author and isinstance(pull_request, dict):
+            pr_author = pull_request.get('author', {}).get('user', {})
+            if isinstance(pr_author, dict):
+                author = pr_author.get('name') or pr_author.get('slug') or pr_author.get('displayName') or ''
 
         source_branch = pull_request.get('fromRef', {}).get('displayId') if pull_request.get('fromRef') else pull_request.get('source_branch') or ''
         target_branch = pull_request.get('toRef', {}).get('displayId') if pull_request.get('toRef') else pull_request.get('target_branch') or ''
