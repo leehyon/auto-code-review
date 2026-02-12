@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>代码审查 Dashboard</title>
+    <title>Code Review Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
@@ -31,7 +31,7 @@
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div class="flex items-center justify-between h-16">
                 <div class="flex items-center">
-                    <h1 class="text-2xl font-bold">📊 代码审查 Dashboard</h1>
+                    <h1 class="text-2xl font-bold">📊 Code Review Dashboard</h1>
                 </div>
                 <div class="flex items-center space-x-4">
                     <span id="lastUpdate" class="text-sm text-blue-100"></span>
@@ -160,6 +160,20 @@
             </div>
         </div>
     </div>
+
+    <!-- 页脚 -->
+    <footer class="bg-[#f2f3f4] text-[#3d3d3d] mt-8">
+        <div class="max-w-7xl mx-auto px-4 py-6 flex flex-col md:flex-row items-center md:justify-between">
+            <div class="flex items-center">
+                <img src="magna-logo.png" alt="Magna Logo" class="h-8 w-auto mr-3">
+                <div>
+                    <p class="text-sm font-semibold">SW Team</p>
+                    <p class="text-xs ">基于 AI 的自动代码审查与统计面板，帮助团队提升代码质量</p>
+                </div>
+            </div>
+            <div class="mt-4 md:mt-0 text-xs">© 2026 Magna Mirrors/Lighting COE</div>
+        </div>
+    </footer>
 
     <script src="app.js"></script>
 </body>
