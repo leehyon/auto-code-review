@@ -1,8 +1,6 @@
-![Push图片](./docs/img/ai-code.jpg)
-
 ## 项目简介
 
-本项目是一个基于大模型的自动化代码审查工具，帮助开发团队在代码合并或提交时，快速进行智能化的审查(Code Review)，提升代码质量和开发效率。
+本项目是一个基于大模型的自动化代码审查工具，帮助开发团队在代码合并或提交时，快速进行智能化的审查，提升代码质量和开发效率。
 
 ## 功能
 
@@ -28,34 +26,11 @@
   | 🌸 **绅士型** | 温柔委婉、如沐春风 | *或许这里可以再优化一下呢~* |
   | 🤪 **幽默型** | 搞笑风趣、快乐改码 | *这段 if-else 比我相亲经历还复杂！* |
 
-
-## 效果图:
-
-### Push 推送示例
-
-![Push图片](./docs/img/push_example.png)
-
-### 代码审查摘要
-
-![Abstract图片](./docs/img/abstract.png)
-
-### GitLab 评论示例
-
-![Gitlab评论图片](./docs/img/comment.png)
-
-### Gitea 评论示例
-
-![Gitea评论图片](./docs/img/gitea.png)
-
-### Dashboard 数据看板
-
-![Dashboard图片](./docs/img/dashboard.png)
-
 ## 原理
 
-在开发者向 **GitLab / GitHub / Gitea** 提交代码（包括 Merge Request/Pull Request 创建或 Push 操作）时，代码托管平台会根据预设的 Webhook 配置触发回调请求，调用本系统提供的接口。系统接收到事件后，将解析提交内容，并通过集成的第三方大语言模型对代码变更进行静态审查。
+在开发者向 **Bitbucket / GitLab / GitHub / Gitea** 提交代码（包括 Merge Request/Pull Request 创建或 Push 操作）时，代码托管平台会根据预设的 Webhook 配置触发回调请求，调用本系统提供的接口。系统接收到事件后，将解析提交内容，并通过集成的第三方大语言模型对代码变更进行静态审查。
 
-审查内容包括但不限于：代码规范检查、潜在错误识别、安全风险分析及可维护性建议。完成审查后，系统会将结果以评论的形式自动回写至对应的 Merge Request/Pull Request 或 Commit 页面（Gitea 还支持创建 Issue 来存储审查结果），确保审查反馈能够实时集成至开发工作流中，从而提升代码质量与团队协作效率。
+审查内容包括但不限于：代码规范检查、潜在错误识别、安全风险分析及可维护性建议。完成审查后，系统会将结果以评论的形式自动回写至对应的 Merge Request/Pull Request 或 Commit 页面，确保审查反馈能够实时集成至开发工作流中，从而提升代码质量与团队协作效率。
 
 **流程图**
 ```mermaid
@@ -123,8 +98,8 @@ flowchart TD
 
 - 克隆项目仓库：
 ```aiignore
-git clone https://github.com/spherical-up/Easy-AI-CodeReview
-cd Easy-AI-CodeReview
+git clone https://github.com/leehyon/auto-code-review
+cd auto-code-review
 ```
 
 - 创建配置文件：
@@ -135,7 +110,7 @@ cp config/.env.dist config/.env
 - 编辑 config/.env 文件，配置以下关键参数：
 
 ```bash
-#大模型供应商配置,支持 openai , deepseek 和 qwen
+#大模型供应商配置,支持 openai, deepseek 和 qwen
 LLM_PROVIDER=deepseek
 
 #DeepSeek
@@ -167,13 +142,13 @@ docker-compose up -d
   - 访问 http://your-server-ip:5002
   - 看到一个审查日志页面，说明 Dashboard 启动成功。
 
-### 方案二：本地Python环境部署
+### 方案二：本地 Python 环境部署
 
 **1. 获取源码**
 
 ```bash
-git clone https://github.com/spherical-up/Easy-AI-CodeReview
-cd Easy-AI-CodeReview
+git clone https://github.com/leehyon/auto-code-review
+cd auto-code-review
 ```
 
 **2. 安装依赖**
@@ -186,7 +161,7 @@ pip install -r requirements.txt
 
 **3. 配置环境变量**
 
-同 Docker 部署方案中的.env 文件配置。
+同 Docker 部署方案中的 `.env` 文件配置。
 
 **4. 启动服务**
 
@@ -208,25 +183,25 @@ python ui_server.py
 
 #### GitLab Webhook 配置
 
-**1. 创建Access Token**
+**1. 创建 Access Token**
 
 方法一：在 GitLab 个人设置中，创建一个 Personal Access Token。
 
-方法二：在 GitLab 项目设置中，创建Project Access Token
+方法二：在 GitLab 项目设置中，创建 Project Access Token
 
 **2. 配置 Webhook**
 
 在 GitLab 项目设置中，配置 Webhook：
 
 - URL：http://your-server-ip:5001/review/webhook
-- Trigger Events：勾选 Push Events 和 Merge Request Events (不要勾选其它Event)
-- Secret Token：上面配置的 Access Token(可选)
+- Trigger Events：勾选 Push Events 和 Merge Request Events (不要勾选其它 Event)
+- Secret Token：上面配置的 Access Token
 
 **备注**
 
-1. Token使用优先级
+1. Token 使用优先级
   - 系统优先使用 .env 文件中的 `GITLAB_ACCESS_TOKEN`。
-  - 如果 .env 文件中没有配置 `GITLAB_ACCESS_TOKEN`，则使用 Webhook 传递的Secret Token。
+  - 如果 .env 文件中没有配置 `GITLAB_ACCESS_TOKEN`，则使用 Webhook 传递的 Secret Token。
 2. 网络访问要求
   - 请确保 GitLab 能够访问本系统。
   - 若内网环境受限，建议将系统部署在外网服务器上。
@@ -257,7 +232,7 @@ GITHUB_URL=https://api.github.com
 
 #### Gitea Webhook 配置
 
-**1. 创建Access Token**
+**1. 创建 Access Token**
 
 在 Gitea 个人设置中，创建一个 Access Token，需要 `repo` 权限。
 
