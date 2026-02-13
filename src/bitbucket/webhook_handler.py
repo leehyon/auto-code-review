@@ -221,9 +221,9 @@ class PullRequestHandler:
             r = requests.get(url, headers=headers, timeout=20, verify=False)
             if r.status_code == 200:
                 commits = r.json().get('values', [])
-                gitlab_format_commits = []
+                bitbucket_format_commits = []
                 for c in commits:
-                    gitlab_commit = {
+                    bb_commit = {
                         'id': c.get('id') or c.get('displayId'),
                         'title': c.get('message', '').split('\n')[0],
                         'message': c.get('message', ''),
@@ -232,8 +232,8 @@ class PullRequestHandler:
                         'created_at': c.get('authorTimestamp') if c.get('authorTimestamp') else None,
                         'web_url': None
                     }
-                    gitlab_format_commits.append(gitlab_commit)
-                return gitlab_format_commits
+                    bitbucket_format_commits.append(bb_commit)
+                return bitbucket_format_commits
         except Exception as e:
             logger.error(f"Failed to get pull request commits from Bitbucket: {str(e)}")
         return []
@@ -278,30 +278,30 @@ class PushHandler:
         self.repo_project = project.get('key') or repository.get('projectKey')
         self.repo_slug = repository.get('slug') or repository.get('name')
         # bitbucket payload shape: push.changes -> list
-        push = self.webhook_data.get('push') or {}
-        changes = push.get('changes') if isinstance(push, dict) else self.webhook_data.get('changes')
+        # push = self.webhook_data.get('push') or {}
+        changes = self.webhook_data.get('changes')
         if isinstance(changes, list) and len(changes) > 0:
-            ref = changes[0].get('ref') or {}
-            self.branch_name = ref.get('displayId') or ref.get('id', '')
+            # ref = changes[0].get('ref') or {}
+            self.branch_name = changes[0].get('refId')
             # normalize
             if isinstance(self.branch_name, str) and self.branch_name.startswith('refs/heads/'):
                 self.branch_name = self.branch_name.replace('refs/heads/', '')
-            # collect commits
-            commits = []
-            for c in changes[0].get('commits', []) if changes[0].get('commits') else []:
-                commit_info = {
-                    'message': c.get('message', ''),
-                    'author': c.get('author', {}).get('name') if isinstance(c.get('author'), dict) else None,
-                    'timestamp': c.get('authorTimestamp') if c.get('authorTimestamp') else None,
-                    'url': None
-                }
-                commits.append(commit_info)
-            self.commit_list = commits
+            # # collect commits
+            # commits = []
+            # for c in changes[0].get('commits', []) if changes[0].get('commits') else []:
+            #     commit_info = {
+            #         'message': c.get('message', ''),
+            #         'author': c.get('author', {}).get('name') if isinstance(c.get('author'), dict) else None,
+            #         'timestamp': c.get('authorTimestamp') if c.get('authorTimestamp') else None,
+            #         'url': None
+            #     }
+            #     commits.append(commit_info)
+            # self.commit_list = commits
         else:
             # fallback: top-level commits
-            self.commit_list = self.webhook_data.get('commits', [])
             self.branch_name = self.webhook_data.get('ref', '').replace('refs/heads/', '') if self.webhook_data.get('ref') else None
-
+        self.commit_list = self.webhook_data.get('commits', [])
+        
     def get_push_commits(self) -> list:
         return [{'message': c.get('message'), 'author': c.get('author'), 'timestamp': c.get('timestamp'), 'url': c.get('url')} for c in self.commit_list]
 
@@ -456,7 +456,7 @@ class PushHandler:
         if isinstance(self.commit_list, list) and len(self.commit_list) > 0:
             # show commits from oldest -> newest (or as provided)
             for commit in self.commit_list:
-                cid = commit.get('id') or commit.get('hash') or commit.get('commitId') or commit.get('sha')
+                cid = commit.get('displayId') or commit.get('hash') or commit.get('commitId') or commit.get('sha')
                 msg = (commit.get('message') or '').split('\n', 1)[0]
                 # construct Bitbucket web UI commit URL when repo info is available
                 commit_api_url = ''
@@ -480,7 +480,11 @@ class PushHandler:
         content_parts = [header_tags]
         if commit_lines:
             content_parts.append("")
-            content_parts.append("Commits:")
+            branch = self.branch_name or ''
+            if branch:
+                content_parts.append(f"Commits on {branch}:")
+            else:
+                content_parts.append("Commits:")
             content_parts.extend(commit_lines)
         content_parts.append("")
         content_parts.append(message)
