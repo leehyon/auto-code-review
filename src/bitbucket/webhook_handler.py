@@ -316,22 +316,123 @@ class PushHandler:
             if not cid:
                 continue
             try:
-                url = f"{self.bitbucket_url}/rest/api/latest/projects/{self.repo_project}/repos/{self.repo_slug}/commits/{cid}/changes"
+                url = f"{self.bitbucket_url}/rest/api/latest/projects/{self.repo_project}/repos/{self.repo_slug}/commits/{cid}/diff"
                 r = requests.get(url, headers=headers, timeout=20, verify=False)
                 if r.status_code == 200:
-                    data = r.json()
-                    for v in data.get('values', []):
-                        change = {
-                            'diff': v.get('diff') or '',
-                            'new_path': v.get('path', {}).get('toString') if isinstance(v.get('path'), dict) else v.get('path'),
-                            'additions': v.get('linesAdded', 0),
-                            'deletions': v.get('linesRemoved', 0)
-                        }
-                        changes.append(change)
+                    # try to parse JSON-shaped diff response first
+                    try:
+                        data = r.json()
+                    except ValueError:
+                        data = None
+
+                    # Newer Bitbucket Server responses may include a `diffs` array
+                    if isinstance(data, dict) and data.get('diffs'):
+                        for d in data.get('diffs', []):
+                            dest = d.get('destination') or {}
+                            src = d.get('source') or {}
+                            new_path = dest.get('toString') or dest.get('name') or dest.get('path') or ''
+                            src_path = src.get('toString') or src.get('name') or src.get('path') or new_path
+
+                            # build a unified diff-like text from hunks/segments
+                            diff_lines = []
+                            diff_lines.append(f"diff --git a/{src_path} b/{new_path}")
+                            diff_lines.append(f"--- a/{src_path}")
+                            diff_lines.append(f"+++ b/{new_path}")
+                            for h in d.get('hunks', []) or []:
+                                sl = h.get('sourceLine', 0) or 0
+                                ss = h.get('sourceSpan', 0) or 0
+                                dl = h.get('destinationLine', 0) or 0
+                                ds = h.get('destinationSpan', 0) or 0
+                                diff_lines.append(f"@@ -{sl},{ss} +{dl},{ds} @@")
+                                for seg in h.get('segments', []) or []:
+                                    seg_type = (seg.get('type') or '').upper()
+                                    for lineobj in seg.get('lines', []) or []:
+                                        line_text = lineobj.get('line', '')
+                                        if seg_type == 'CONTEXT':
+                                            prefix = ' '
+                                        elif seg_type == 'ADDED':
+                                            prefix = '+'
+                                        elif seg_type == 'REMOVED':
+                                            prefix = '-'
+                                        else:
+                                            prefix = ' '
+                                        diff_lines.append(prefix + line_text)
+
+                            diff_text = '\n'.join(diff_lines)
+                            additions = len(re.findall(r'^\+(?!\+\+)', diff_text, re.MULTILINE))
+                            deletions = len(re.findall(r'^-(?!--)', diff_text, re.MULTILINE))
+                            changes.append({'diff': diff_text, 'new_path': new_path, 'additions': additions, 'deletions': deletions})
+
+                    # older shape: values array with path/diff fields
+                    elif isinstance(data, dict) and data.get('values'):
+                        for v in data.get('values', []):
+                            change = {
+                                'diff': v.get('diff') or '',
+                                'new_path': v.get('path', {}).get('toString') if isinstance(v.get('path'), dict) else v.get('path'),
+                                'additions': v.get('linesAdded', 0),
+                                'deletions': v.get('linesRemoved', 0)
+                            }
+                            changes.append(change)
+
+                    # fallback: treat response body as unified diff text
+                    else:
+                        text = r.text or ''
+                        if text:
+                            parts = re.split(r"\n(?=diff --git )", text)
+                            for part in parts:
+                                part = part.strip('\n')
+                                if not part:
+                                    continue
+                                first_line = part.split('\n', 1)[0]
+                                new_path = ''
+                                m = re.search(r"diff --git a/(.+?) b/(.+)$", first_line)
+                                if m:
+                                    new_path = m.group(2)
+                                else:
+                                    m2 = re.search(r"\+\+\+ b/(.+)$", part, re.MULTILINE)
+                                    if m2:
+                                        new_path = m2.group(1)
+
+                                additions = len(re.findall(r'^\+(?!\+\+)', part, re.MULTILINE))
+                                deletions = len(re.findall(r'^-(?!--)', part, re.MULTILINE))
+                                changes.append({'diff': part, 'new_path': new_path, 'additions': additions, 'deletions': deletions})
             except Exception as e:
                 logger.debug(f"Failed to fetch commit changes {cid}: {str(e)}")
         return changes
 
     def add_push_notes(self, message: str):
-        # Bitbucket Server doesn't support commit comments in uniform fashion here; skip or post to PR if available
-        logger.info('add_push_notes: Bitbucket push notes posting is not implemented; skipping')
+        # Post a comment to each commit that exposes an id/hash using Bitbucket Server commit comments API
+        if not (self.repo_project and self.repo_slug):
+            logger.warn("Missing repo info to add commit comment")
+            return
+
+        headers = {
+            'Accept': 'application/json;charset=UTF-8',
+            'Content-Type': 'application/json'
+        }
+        if self.bitbucket_token:
+            headers['Authorization'] = f'Bearer {self.bitbucket_token}'
+
+        posted_any = False
+
+        # 获取最后一个提交的ID
+        last_commit_id = self.commit_list[-1].get('id')
+        if not last_commit_id:
+            logger.error("Last commit ID not found.")
+            return
+        
+        try:
+            url = f"{self.bitbucket_url}/rest/api/latest/projects/{self.repo_project}/repos/{self.repo_slug}/commits/{last_commit_id}/comments"
+            data = {'text': message}
+            r = requests.post(url, headers=headers, json=data, timeout=20, verify=False)
+            logger.debug(f"Add comment to commit {last_commit_id} {url}: {r.status_code}, {r.text[:200]}")
+            if r.status_code in (200, 201):
+                logger.info(f"Comment successfully added to commit {last_commit_id}.")
+                posted_any = True
+            else:
+                logger.error(f"Failed to add comment to commit {last_commit_id}: {r.status_code}, {r.text[:500]}")
+        except Exception as e:
+            logger.error(f"Failed to post commit comment for {last_commit_id}: {str(e)}")
+
+        if not posted_any:
+            logger.info('add_push_notes: No commit comments posted; no commit IDs found or all requests failed')
