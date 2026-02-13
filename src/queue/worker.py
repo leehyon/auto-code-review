@@ -532,7 +532,8 @@ def handle_bitbucket_push_event(webhook_data: dict, bitbucket_token: str, bitbuc
                 for item in changes:
                     additions += item.get('additions', 0)
                     deletions += item.get('deletions', 0)
-            handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+            # handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+            handler.add_memos(review_result)
 
         # attempt to extract project_name and author
         repository = webhook_data.get('repository', {})

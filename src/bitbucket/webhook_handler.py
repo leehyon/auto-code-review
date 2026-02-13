@@ -436,3 +436,64 @@ class PushHandler:
 
         if not posted_any:
             logger.info('add_push_notes: No commit comments posted; no commit IDs found or all requests failed')
+    
+    def add_memos(self, message: str):
+        # Post a note to local memos server for the code review message.
+        # Compose commit list first (each commit includes a link to the Bitbucket commit API), then the review result.
+        memos_url = os.getenv('MEMOS_URL') or os.getenv('MEMOS_SERVER')
+        memos_token = os.getenv('MEMOS_TOKEN') or os.getenv('MEMOS_API_TOKEN')
+        if not memos_url:
+            logger.info('add_memos: MEMOS_URL not configured, skipping')
+            return
+
+        url = f"{memos_url.rstrip('/')}/api/v1/memos"
+        headers = {'Content-Type': 'application/json'}
+        if memos_token:
+            headers['Authorization'] = f'Bearer {memos_token}'
+
+        # Build commit listing (prefer commit id fields and construct API link)
+        commit_lines = []
+        if isinstance(self.commit_list, list) and len(self.commit_list) > 0:
+            # show commits from oldest -> newest (or as provided)
+            for commit in self.commit_list:
+                cid = commit.get('id') or commit.get('hash') or commit.get('commitId') or commit.get('sha')
+                msg = (commit.get('message') or '').split('\n', 1)[0]
+                # construct Bitbucket web UI commit URL when repo info is available
+                commit_api_url = ''
+                if cid and self.repo_project and self.repo_slug and self.bitbucket_url:
+                    # web UI link (clickable in Markdown)
+                    commit_api_url = f"{self.bitbucket_url.rstrip('/')}/projects/{self.repo_project}/repos/{self.repo_slug}/commits/{cid}"
+                else:
+                    commit_api_url = commit.get('url') or commit.get('web_url') or ''
+
+                if cid and commit_api_url:
+                    commit_lines.append(f"- [{cid}]({commit_api_url}) {msg}")
+                elif cid:
+                    commit_lines.append(f"- {cid} {msg}")
+                elif msg:
+                    commit_lines.append(f"- {msg}")
+
+        # Compose memo content: commits first, then review message
+        content_parts = []
+        if commit_lines:
+            content_parts.append("Commits:")
+            content_parts.extend(commit_lines)
+            content_parts.append("")
+        content_parts.append(message)
+
+        body = {
+            'state': 'STATE_UNSPECIFIED',
+            'content': "\n".join(content_parts),
+            'visibility': 'PUBLIC'
+        }
+
+        try:
+            r = requests.post(url, json=body, headers=headers, timeout=10, verify=False)
+            logger.debug(f"add_memos POST {url}: {r.status_code}, {r.text[:200]}")
+            if r.status_code in (200, 201):
+                logger.info('add_memos: memo posted successfully')
+            else:
+                logger.error(f"add_memos: failed to post memo: {r.status_code}, {r.text[:500]}")
+        except Exception as e:
+            logger.error(f"add_memos: exception posting memo: {str(e)}")
+        
