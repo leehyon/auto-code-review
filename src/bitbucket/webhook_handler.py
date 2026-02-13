@@ -473,12 +473,16 @@ class PushHandler:
                 elif msg:
                     commit_lines.append(f"- {msg}")
 
-        # Compose memo content: commits first, then review message
-        content_parts = []
+        # Compose memo content: header (hashtags), commits first, then review message
+        repo_name = self.repo_slug or (self.repo_full_name or '')
+        header_tags = f"#{repo_name} #code-review #generated-by-ai" if repo_name else "#code-review #generated-by-ai"
+
+        content_parts = [header_tags]
         if commit_lines:
+            content_parts.append("")
             content_parts.append("Commits:")
             content_parts.extend(commit_lines)
-            content_parts.append("")
+        content_parts.append("")
         content_parts.append(message)
 
         body = {
