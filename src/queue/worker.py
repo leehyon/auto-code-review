@@ -14,6 +14,20 @@ from src.utils.messaging import notifier
 from src.utils.log import logger
 
 
+def _get_mention_suffix():
+    """Return a mention suffix built from REVIEW_MENTION_USERS env var.
+
+    Expected format in .env: REVIEW_MENTION_USERS=junchu1,alice,bob
+    Returns a string like: ", @junchu1, @alice FYI" or empty string if not set.
+    """
+    users = os.environ.get('REVIEW_MENTION_USERS', '')
+    if not users:
+        return ''
+    mentions = ', '.join(f'@{u.strip()}' for u in users.split(',') if u.strip())
+    if not mentions:
+        return ''
+    return f', {mentions} FYI'
+
 
 def handle_push_event(webhook_data: dict, gitlab_token: str, gitlab_url: str, gitlab_url_slug: str):
     push_review_enabled = os.environ.get('PUSH_REVIEW_ENABLED', '0') == '1'
@@ -597,7 +611,9 @@ def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str
         commits_text = ';'.join(commit.get('title', commit.get('message', '')).split('\n')[0] for commit in commits)
         review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
 
-        handler.add_pull_request_notes(f'Auto Review Result: \n{review_result}')
+        mention_suffix = _get_mention_suffix()
+        logger.debug('PR mention suffix: %s', mention_suffix)
+        handler.add_pull_request_notes(f'Auto Review Result{mention_suffix}: \n{review_result}')
 
         pull_request = webhook_data.get('pullRequest') or webhook_data.get('pull_request') or {}
         # Prefer repository info from pull request refs (fromRef / toRef), fallback to top-level repository
