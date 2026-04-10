@@ -1,6 +1,7 @@
 import os
 
 from src.llm.client.base import BaseClient
+from src.llm.client.copilot import CopilotClient
 from src.llm.client.deepseek import DeepSeekClient
 from src.llm.client.openai import OpenAIClient
 from src.llm.client.qwen import QwenClient
@@ -15,6 +16,7 @@ class Factory:
             'openai': lambda: OpenAIClient(),
             'deepseek': lambda: DeepSeekClient(),
             'qwen': lambda: QwenClient(),
+            'copilot': lambda: CopilotClient(),
         }
 
         provider_func = chat_model_providers.get(provider)
