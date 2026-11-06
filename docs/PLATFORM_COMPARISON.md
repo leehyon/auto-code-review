@@ -18,7 +18,7 @@
 | **Webhook 识别方式** | `object_kind` 字段 | `X-GitHub-Event` Header | `X-Gitea-Event` Header | `X-Event-Key` Header |
 | **事件类型字段** | `merge_request` / `push` | `pull_request` / `push` | `pull_request` / `push` | `pr:*` / `repo:refs_changed` |
 | **API 基础路径** | `/api/v4/` | `/api/v3/` | `/api/v1/` | `/rest/api/1.0/` |
-| **认证方式** | `Private-Token` Header | `Authorization: token` Header | `Authorization: token` Header | HTTP Basic（用户名 + token）或 Bearer（仅 token） |
+| **认证方式** | `Private-Token` Header | `Authorization: *** Header | `Authorization: *** Header | `Bearer` Header（仅 token，不传用户名） |
 | **仓库标识** | 数字 project ID | `owner/repo` 路径 | `owner/repo` 路径 | `projectKey` + `repositorySlug` |
 | **获取变更 API** | `/merge_requests/{iid}/changes` | `/pulls/{number}/files` | `/pulls/{number}/files` | `/pull-requests/{id}.diff`（原始文本） |
 | **添加评论 API** | `/merge_requests/{iid}/notes` | `/issues/{number}/comments` | `/issues/{number}/comments` 或 `/pulls/{number}/comments` | `/pull-requests/{id}/comments` |
@@ -432,7 +432,6 @@ GITEA_USE_ISSUE_MODE=1  # 推荐启用
 ```bash
 BITBUCKET_URL=https://bitbucket.example.com
 BITBUCKET_ACCESS_TOKEN=your_token
-BITBUCKET_USERNAME=your_username  # HTTP Basic 认证需要
 BITBUCKET_VERIFY_SSL=0  # 自签证书场景保持关闭
 ```
 
@@ -475,32 +474,33 @@ BITBUCKET_VERIFY_SSL=0  # 自签证书场景保持关闭
 
 #### 问题：Bitbucket 提示缺少 access token
 **解决方案**：
-1. 配置环境变量 `BITBUCKET_ACCESS_TOKEN` 与 `BITBUCKET_USERNAME`
-2. 或在 Bitbucket Webhook 上配置 HTTP Basic 认证（系统会解析 `Authorization` Header）
-3. 确认 Token 勾选了 `Repository read` / `Repository write` 权限
+1. 配置环境变量 `BITBUCKET_ACCESS_TOKEN`（Personal Access Token）
+2. 确认 Token 勾选了 `Repository read` / `Repository write` 权限
+3. Webhook 上配置的 HTTP Basic 认证头**不会**被解析成凭证，凭证只来自环境变量
 
 #### 问题：Bitbucket 返回 401 Unauthorized
 **解决方案**：
-1. **确认 token 类型与认证方式匹配**（见下方说明）：项目/仓库级 token 只能用 Bearer 认证，
-   若配了 `BITBUCKET_USERNAME` 系统会先试 Basic，被拒后自动回退 Bearer，日志中会出现
-   `Bitbucket rejected the basic authentication, retrying with bearer authentication.`
+1. **确认 token 有效且未过期**：DC 的 HTTP access token 支持设置过期时间，过期后即 401；
+   本系统统一使用 Bearer 认证（`Authorization: Bearer <token>`），不传用户名
 2. **确认 token 权限足够**：读 PR/diff/commit 需 `Repository read`；
    回写评论需 `Repository write`；查询受保护分支需 `Repository admin`（否则 401）
 3. **确认 token 可见范围**：项目/仓库级 token 只能访问它所属的项目/仓库，跨项目无效
-4. **确认 token 未过期**：DC 的 HTTP access token 支持设置过期时间，过期后即 401
+4. **确认 token 类型**：个人 token 与项目/仓库级 token 都用 Bearer，若个人 token 被拒，
+   先确认它是否已过期或被撤销
 
 #### 关于 Bitbucket 的两种 HTTP access token
-Bitbucket Data Center 同时提供**个人 token** 与**项目/仓库级 token**，二者的 REST 认证方式不同：
+Bitbucket Data Center 同时提供**个人 token** 与**项目/仓库级 token**，二者都能用 Bearer 认证：
 
 | Token 类型 | HTTP Basic | Bearer |
 |---|---|---|
 | 个人 token（Manage account → HTTP access tokens） | ✅ 用户名 + token | ✅ 仅 token |
-| 项目 / 仓库级 token（Project/Repository settings → HTTP access tokens） | ⚠️ 用户名必须是 `x-token-auth` | ✅ 仅 token（官方要求） |
+| 项目 / 仓库级 token（Project/Repository settings → HTTP access tokens） | ⚠️ 用户名必须是 `x-token-auth` | ✅ 仅 token（官方唯一要求的方式） |
 
 - 项目/仓库级 token **不绑定用户**，可见范围仅该项目/仓库，且**需要 Data Center license**；
   仓库级 token 不能授予任何项目级权限。
-- 本系统**默认使用 Bearer**（两种 token 都适用），仅在配置了 `BITBUCKET_USERNAME` 时才先用 Basic，
-  并在 401 时自动回退 Bearer。
+- 本系统**统一使用 Bearer**，不使用 HTTP Basic：Basic 需要把用户名和 token 一起编码传输，
+  相比 Bearer 并不更安全；而且部分 Atlassian 部署的机器人防护会针对 Basic 触发 CAPTCHA，
+  令自动化调用中断。个人 token 与项目/仓库级 token 用同一份配置即可。
 
 #### 问题：Bitbucket 提示缺少 URL
 **解决方案**：

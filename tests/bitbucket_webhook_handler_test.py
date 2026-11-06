@@ -288,7 +288,7 @@ class TestRestDiffToUnified(unittest.TestCase):
 class TestPullRequestHandler(unittest.TestCase):
 
     def setUp(self):
-        self.handler = PullRequestHandler(PR_PAYLOAD, 'token', 'http://bitbucket.example.com', 'admin')
+        self.handler = PullRequestHandler(PR_PAYLOAD, 'token', 'http://bitbucket.example.com')
 
     def test_parses_event_and_refs(self):
         self.assertEqual(self.handler.event_type, 'pr:opened')
@@ -308,14 +308,14 @@ class TestPullRequestHandler(unittest.TestCase):
 
     def test_supported_event_only(self):
         handler = PullRequestHandler({'eventKey': 'pr:merged', 'pullRequest': PR_PAYLOAD['pullRequest']},
-                                     'token', 'http://bitbucket.example.com', 'admin')
+                                     'token', 'http://bitbucket.example.com')
         self.assertEqual(handler.get_pull_request_commits(), [])
 
 
 class TestPushHandler(unittest.TestCase):
 
     def setUp(self):
-        self.handler = PushHandler(PUSH_PAYLOAD, 'token', 'http://bitbucket.example.com', 'admin')
+        self.handler = PushHandler(PUSH_PAYLOAD, 'token', 'http://bitbucket.example.com')
 
     def test_parses_repository_and_branch(self):
         self.assertEqual(self.handler.event_type, 'repo:refs_changed')
@@ -334,7 +334,7 @@ class TestPushHandler(unittest.TestCase):
     def test_tag_push_is_ignored(self):
         payload = dict(PUSH_PAYLOAD)
         payload['changes'] = [{'ref': {'id': 'refs/tags/v1', 'displayId': 'v1', 'type': 'TAG'}}]
-        handler = PushHandler(payload, 'token', 'http://bitbucket.example.com', 'admin')
+        handler = PushHandler(payload, 'token', 'http://bitbucket.example.com')
         self.assertEqual(handler.branch_name, '')
 
 
@@ -354,40 +354,42 @@ class FakeResponse:
 
 class TestBitbucketClient(unittest.TestCase):
 
-    def test_basic_auth_header(self):
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
-        self.assertTrue(client.headers['Authorization'].startswith('Basic '))
-
-    def test_bearer_auth_when_no_username(self):
-        os.environ.pop('BITBUCKET_USERNAME', None)
-        client = BitbucketClient('http://bb.example.com', 'secret', None)
+    def test_bearer_auth_header(self):
+        """只使用 Bearer 认证，不提供任何 Basic 认证能力。"""
+        client = BitbucketClient('http://bb.example.com', 'secret')
         self.assertEqual(client.headers['Authorization'], 'Bearer secret')
+        self.assertNotIn('Basic', client.headers['Authorization'])
+
+    def test_client_has_no_username(self):
+        """客户端不再接受也不需要用户名。"""
+        client = BitbucketClient('http://bb.example.com', 'secret')
+        self.assertFalse(hasattr(client, 'username'))
 
     def test_api_url_uses_rest_api_1_0(self):
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        client = BitbucketClient('http://bb.example.com', 'secret')
         self.assertEqual(client.api_url('/projects/PROJ/repos/demo'),
                          'http://bb.example.com/rest/api/1.0/projects/PROJ/repos/demo')
 
     def test_plugin_url(self):
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        client = BitbucketClient('http://bb.example.com', 'secret')
         self.assertEqual(client.plugin_url('branch-permissions', '/x'),
                          'http://bb.example.com/rest/branch-permissions/latest/x')
 
     def test_get_text_returns_none_on_error(self):
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        client = BitbucketClient('http://bb.example.com', 'secret')
         with mock.patch('src.bitbucket.webhook_handler.requests.get',
                         return_value=FakeResponse(404, 'not found')):
             self.assertIsNone(client.get_text('/x'))
 
     def test_get_text_returns_empty_string_on_empty_body(self):
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        client = BitbucketClient('http://bb.example.com', 'secret')
         with mock.patch('src.bitbucket.webhook_handler.requests.get',
                         return_value=FakeResponse(200, '')):
             self.assertEqual(client.get_text('/x'), '')
 
     def test_get_text_requests_text_plain(self):
         """Bitbucket 的 .diff 接口只接受 text/plain，用 application/json 会返回 406。"""
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        client = BitbucketClient('http://bb.example.com', 'secret')
         with mock.patch('src.bitbucket.webhook_handler.requests.get',
                         return_value=FakeResponse(200, 'diff')) as get:
             client.get_text('/x')
@@ -395,53 +397,55 @@ class TestBitbucketClient(unittest.TestCase):
         self.assertEqual(headers['Accept'], 'text/plain')
 
     def test_get_json_requests_application_json(self):
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        client = BitbucketClient('http://bb.example.com', 'secret')
         with mock.patch('src.bitbucket.webhook_handler.requests.get',
                         return_value=FakeResponse(200, '{}', {})) as get:
             client.get_json('/x')
         headers = get.call_args[1]['headers']
         self.assertEqual(headers['Accept'], 'application/json')
 
-    def test_basic_auth_used_when_username_configured(self):
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
-        self.assertTrue(client.headers['Authorization'].startswith('Basic '))
-
-    def test_get_falls_back_to_bearer_on_401(self):
-        """项目/仓库级 token 必须用 Bearer，Basic 被拒后应自动回退。"""
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
-        responses = [FakeResponse(401, 'unauthorized'), FakeResponse(200, '{}', {})]
+    def test_get_sends_bearer_only(self):
+        """GET 只发一次请求，且使用 Bearer。"""
+        client = BitbucketClient('http://bb.example.com', 'secret')
         with mock.patch('src.bitbucket.webhook_handler.requests.get',
-                        side_effect=responses) as get:
+                        return_value=FakeResponse(200, '{}', {})) as get:
             result = client.get('/x')
         self.assertEqual(result.status_code, 200)
-        self.assertEqual(get.call_count, 2)
-        self.assertTrue(get.call_args_list[0][1]['headers']['Authorization'].startswith('Basic '))
-        self.assertTrue(get.call_args_list[1][1]['headers']['Authorization'].startswith('Bearer '))
+        self.assertEqual(get.call_count, 1)
+        self.assertTrue(get.call_args_list[0][1]['headers']['Authorization'].startswith('Bearer '))
 
-    def test_post_falls_back_to_bearer_on_401(self):
-        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
-        responses = [FakeResponse(401, 'unauthorized'), FakeResponse(201, '{}', {})]
+    def test_post_sends_bearer_only(self):
+        """POST 只发一次请求，且使用 Bearer。"""
+        client = BitbucketClient('http://bb.example.com', 'secret')
         with mock.patch('src.bitbucket.webhook_handler.requests.post',
-                        side_effect=responses) as post:
+                        return_value=FakeResponse(201, '{}', {})) as post:
             result = client.post('/x', {'text': 'hi'})
         self.assertEqual(result.status_code, 201)
-        self.assertEqual(post.call_count, 2)
-        self.assertTrue(post.call_args_list[1][1]['headers']['Authorization'].startswith('Bearer '))
+        self.assertEqual(post.call_count, 1)
+        self.assertTrue(post.call_args_list[0][1]['headers']['Authorization'].startswith('Bearer '))
 
-    def test_no_fallback_without_username(self):
-        client = BitbucketClient('http://bb.example.com', 'secret', None)
-        os.environ.pop('BITBUCKET_USERNAME', None)
+    def test_no_basic_retry_on_401(self):
+        """401 不再回退到 Basic，直接把 401 返回给调用方。"""
+        client = BitbucketClient('http://bb.example.com', 'secret')
         with mock.patch('src.bitbucket.webhook_handler.requests.get',
                         return_value=FakeResponse(401, 'unauthorized')) as get:
             result = client.get('/x')
         self.assertEqual(result.status_code, 401)
         self.assertEqual(get.call_count, 1)
 
+    def test_no_basic_retry_on_401_for_post(self):
+        client = BitbucketClient('http://bb.example.com', 'secret')
+        with mock.patch('src.bitbucket.webhook_handler.requests.post',
+                        return_value=FakeResponse(401, 'unauthorized')) as post:
+            result = client.post('/x', {'text': 'hi'})
+        self.assertEqual(result.status_code, 401)
+        self.assertEqual(post.call_count, 1)
+
 
 class TestPullRequestApiCalls(unittest.TestCase):
 
     def setUp(self):
-        self.handler = PullRequestHandler(PR_PAYLOAD, 'token', 'http://bb.example.com', 'admin')
+        self.handler = PullRequestHandler(PR_PAYLOAD, 'token', 'http://bb.example.com')
 
     @mock.patch('src.bitbucket.webhook_handler.time.sleep', return_value=None)
     def test_get_pull_request_changes_uses_raw_diff_endpoint(self, _sleep):
@@ -501,7 +505,7 @@ class TestPullRequestApiCalls(unittest.TestCase):
 class TestPushApiCalls(unittest.TestCase):
 
     def setUp(self):
-        self.handler = PushHandler(PUSH_PAYLOAD, 'token', 'http://bb.example.com', 'admin')
+        self.handler = PushHandler(PUSH_PAYLOAD, 'token', 'http://bb.example.com')
 
     def test_get_push_changes_uses_repo_range_diff(self):
         with mock.patch.object(self.handler.client, 'get_text', return_value=RAW_DIFF) as get_text:

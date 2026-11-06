@@ -3,7 +3,6 @@ from dotenv import load_dotenv
 load_dotenv("config/.env")
 
 import atexit
-import base64
 import json
 import os
 import traceback
@@ -23,7 +22,7 @@ from src.queue.worker import handle_merge_request_event, handle_push_event, hand
 from src.service.review_service import ReviewService
 from src.utils.messaging import notifier
 from src.utils.log import logger
-from src.utils.queue import handle_queue, handle_queue_with_username
+from src.utils.queue import handle_queue
 from src.utils.reporter import Reporter
 
 from src.utils.config_checker import check_config
@@ -521,33 +520,20 @@ def get_bitbucket_credentials():
     """
     获取 Bitbucket 访问凭证。
 
-    优先使用环境变量 BITBUCKET_ACCESS_TOKEN / BITBUCKET_USERNAME；
-    其次使用 webhook 配置的 Basic 认证（Bitbucket 支持在 webhook 上配置用户名+密码/PAT）。
+    只使用 Bearer 认证：环境变量 BITBUCKET_ACCESS_TOKEN 即为 Personal Access Token，
+    请求时以 ``Authorization: Bearer <token>`` 发送，不需要用户名。
     """
-    token = os.getenv('BITBUCKET_ACCESS_TOKEN')
-    username = os.getenv('BITBUCKET_USERNAME')
-
-    if not token:
-        authorization = request.headers.get('Authorization', '')
-        if authorization.startswith('Basic '):
-            try:
-                decoded = base64.b64decode(authorization[6:]).decode('utf-8')
-                if ':' in decoded:
-                    username, token = decoded.split(':', 1)
-            except Exception as e:
-                logger.error(f'Failed to decode Bitbucket Authorization header: {e}')
-
-    return token, username or ''
+    return os.getenv('BITBUCKET_ACCESS_TOKEN')
 
 
 def handle_bitbucket_webhook(event_type, data):
     logger.info(f'Processing Bitbucket webhook, event_type: {event_type}')
 
     # 获取 Bitbucket 配置
-    bitbucket_token, bitbucket_username = get_bitbucket_credentials()
+    bitbucket_token = get_bitbucket_credentials()
     if not bitbucket_token:
         error_msg = ('Missing Bitbucket access token. Please set BITBUCKET_ACCESS_TOKEN environment variable '
-                     'or configure basic authentication on the Bitbucket webhook.')
+                     'to your Bitbucket personal access token.')
         logger.error(error_msg)
         return jsonify({'message': error_msg}), 400
 
@@ -572,8 +558,8 @@ def handle_bitbucket_webhook(event_type, data):
 
     if event_type == 'repo:refs_changed':
         # Push 事件
-        handle_queue_with_username(handle_bitbucket_push_event, data, bitbucket_token, bitbucket_url,
-                                   bitbucket_url_slug, bitbucket_username)
+        handle_queue(handle_bitbucket_push_event, data, bitbucket_token, bitbucket_url,
+                     bitbucket_url_slug)
         return jsonify(
             {'message': f'Bitbucket request received(event_type={event_type}), will process asynchronously.'}), 200
     elif event_type.startswith(BITBUCKET_PR_EVENT_PREFIX):
@@ -583,8 +569,8 @@ def handle_bitbucket_webhook(event_type, data):
             return jsonify(
                 {'message': f'Bitbucket Pull Request event {event_type} is ignored, '
                             'only pr:opened and pr:from_ref_updated are supported.'}), 200
-        handle_queue_with_username(handle_bitbucket_pull_request_event, data, bitbucket_token, bitbucket_url,
-                                   bitbucket_url_slug, bitbucket_username)
+        handle_queue(handle_bitbucket_pull_request_event, data, bitbucket_token, bitbucket_url,
+                     bitbucket_url_slug)
         return jsonify(
             {'message': f'Bitbucket request received(event_type={event_type}), will process asynchronously.'}), 200
     else:

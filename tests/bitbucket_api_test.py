@@ -62,14 +62,12 @@ class TestBitbucketApiRouting(unittest.TestCase):
         self.api = api
         self.client = api.api_app.test_client()
         os.environ['BITBUCKET_ACCESS_TOKEN'] = 'test-token'
-        os.environ['BITBUCKET_USERNAME'] = 'admin'
         os.environ.pop('BITBUCKET_URL', None)
         self.addCleanup(os.environ.pop, 'BITBUCKET_ACCESS_TOKEN', None)
-        self.addCleanup(os.environ.pop, 'BITBUCKET_USERNAME', None)
         self.addCleanup(os.environ.pop, 'BITBUCKET_URL', None)
 
     def _post(self, payload, headers):
-        with mock.patch.object(self.api, 'handle_queue_with_username') as handle_queue:
+        with mock.patch.object(self.api, 'handle_queue') as handle_queue:
             response = self.client.post('/review/webhook', json=payload, headers=headers)
         return response, handle_queue
 
@@ -82,8 +80,9 @@ class TestBitbucketApiRouting(unittest.TestCase):
         self.assertIs(args[0], self.api.handle_bitbucket_pull_request_event)
         # URL 从 payload 中推导得出
         self.assertEqual(args[3], 'http://bb.example.com/bitbucket')
-        # 用户名随任务一起传递给 worker（HTTP Basic 认证需要）
-        self.assertEqual(args[5], 'admin')
+        # 只传 token，不传用户名（Bearer 认证）
+        self.assertEqual(args[2], 'test-token')
+        self.assertEqual(len(args), 5)
 
     def test_push_event_routed_to_bitbucket_worker(self):
         response, handle_queue = self._post(PUSH_PAYLOAD, {'X-Event-Key': 'repo:refs_changed'})
@@ -123,21 +122,18 @@ class TestBitbucketApiRouting(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(handle_queue.call_args[0][3], 'http://configured.example.com')
 
-    def test_basic_auth_header_used_when_env_missing(self):
+    def test_basic_auth_header_is_ignored(self):
+        """只使用 Bearer：webhook 上的 Basic 认证头不再被解析成凭证。"""
         import base64
         os.environ.pop('BITBUCKET_ACCESS_TOKEN', None)
-        os.environ.pop('BITBUCKET_USERNAME', None)
         credentials = base64.b64encode(b'webhookuser:webhooktoken').decode()
         response, handle_queue = self._post(PR_PAYLOAD, {
             'X-Event-Key': 'pr:opened',
             'Authorization': f'Basic {credentials}',
         })
-        self.assertEqual(response.status_code, 200)
-        args = handle_queue.call_args[0]
-        self.assertEqual(args[2], 'webhooktoken')
-        self.assertEqual(args[3], 'http://bb.example.com/bitbucket')
-        # Basic 认证头中的用户名也要传给 worker
-        self.assertEqual(args[5], 'webhookuser')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('access token', response.get_json()['message'])
+        handle_queue.assert_not_called()
 
     def test_github_event_not_routed_to_bitbucket(self):
         os.environ['GITHUB_ACCESS_TOKEN'] = 'github-token'

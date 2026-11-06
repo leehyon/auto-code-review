@@ -6,12 +6,11 @@ Bitbucket Server / Data Center webhook 处理模块。
   事件本身不会像 GitLab 那样放在 payload 的 ``object_kind`` 字段里。
 - REST API 路径形如 ``/rest/api/1.0/projects/{projectKey}/repos/{repositorySlug}/...``，
   仓库使用 ``projectKey``（项目 Key）+ ``repositorySlug``（仓库 slug）标识。
-- 认证使用 HTTP Basic（用户名 + Personal Access Token），也兼容 Bearer Token。
+- 认证统一使用 Bearer（``Authorization: Bearer <Personal Access Token>``），不传用户名。
 - PR 的变更通过 ``pull-requests/{pullRequestId}.diff`` 返回原始 unified diff 文本，
   需要自行按文件切分后转换成 GitLab 风格的 changes 列表。
 """
 
-import base64
 import fnmatch
 import os
 import re
@@ -218,35 +217,32 @@ def path_to_string(path_obj: dict) -> str:
 class BitbucketClient:
     """Bitbucket Server / Data Center REST 客户端。
 
-    认证同时兼容两种 HTTP access token：
-    - 个人 token（Manage account -> HTTP access tokens）：Basic（用户名+token）或 Bearer 均可
-    - 项目/仓库级 token（Project/Repository settings -> HTTP access tokens）：
-      官方要求使用 Bearer（不带用户名），Basic 时用户名必须是 ``x-token-auth``
+    认证统一使用 Bearer：``Authorization: Bearer <token>``。
 
-    因此默认优先使用 Bearer（两种 token 都支持），只有显式配置了用户名时才用 Basic，
-    并在 Basic 被拒（401）时自动回退到 Bearer。
+    只传 token，不传用户名，理由如下：
+    - Bitbucket 的个人 token（Manage account -> HTTP access tokens）和项目/仓库级 token
+      （Project/Repository settings -> HTTP access tokens）都支持 Bearer；
+      官方规定项目/仓库级 token *只能* 用 Bearer。
+    - HTTP Basic 需要把用户名和 token 一起编码传输，相比 Bearer 并不更安全，
+      而且部分 Atlassian 部署的机器人防护会针对 Basic 认证触发 CAPTCHA，令自动化调用中断。
+    - 不需要用户名，也就不需要在配置里保存用户名。
+
+    参考：https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html
     """
 
-    def __init__(self, base_url: str, token: str, username: Optional[str] = None):
+    def __init__(self, base_url: str, token: str):
         self.base_url = (base_url or '').rstrip('/')
         self.token = token or ''
-        # 用户名未显式传入时，从环境变量读取（HTTP Basic 认证需要）
-        self.username = username or os.getenv('BITBUCKET_USERNAME', '') or ''
         # 自建实例通常使用自签证书，默认关闭校验，可用 BITBUCKET_VERIFY_SSL=1 开启
         self.verify = os.getenv('BITBUCKET_VERIFY_SSL', '0') == '1'
 
-    def _auth_headers(self, use_basic: bool = True, accept: str = 'application/json') -> dict:
+    def _auth_headers(self, accept: str = 'application/json') -> dict:
+        """构造请求头，统一使用 Bearer 认证。"""
         headers = {
             'Accept': accept,
             'Content-Type': 'application/json',
         }
-        if not self.token:
-            return headers
-        if use_basic and self.username:
-            # Personal Access Token 配合用户名使用 HTTP Basic 认证
-            credentials = base64.b64encode(f"{self.username}:{self.token}".encode()).decode()
-            headers['Authorization'] = f'Basic {credentials}'
-        else:
+        if self.token:
             headers['Authorization'] = f'Bearer {self.token}'
         return headers
 
@@ -266,14 +262,8 @@ class BitbucketClient:
             accept: str = 'application/json') -> requests.Response:
         url = self.plugin_url(plugin, path) if plugin else self.api_url(path)
         logger.debug(f"Bitbucket GET {url}, params={params}")
-        response = requests.get(url, headers=self._auth_headers(accept=accept),
-                                params=params or {}, verify=self.verify, timeout=DEFAULT_TIMEOUT)
-        if response.status_code == 401 and self.username:
-            # Basic 认证被拒：多见于使用了项目/仓库级 token（官方要求用 Bearer），回退重试
-            logger.warn("Bitbucket rejected the basic authentication, retrying with bearer authentication.")
-            response = requests.get(url, headers=self._auth_headers(use_basic=False, accept=accept),
-                                    params=params or {}, verify=self.verify, timeout=DEFAULT_TIMEOUT)
-        return response
+        return requests.get(url, headers=self._auth_headers(accept=accept),
+                            params=params or {}, verify=self.verify, timeout=DEFAULT_TIMEOUT)
 
     def get_text(self, path: str, params: dict = None) -> Optional[str]:
         """
@@ -304,23 +294,16 @@ class BitbucketClient:
     def post(self, path: str, payload: dict) -> requests.Response:
         url = self.api_url(path)
         logger.debug(f"Bitbucket POST {url}")
-        response = requests.post(url, headers=self._auth_headers(), json=payload, verify=self.verify,
-                                 timeout=DEFAULT_TIMEOUT)
-        if response.status_code == 401 and self.username:
-            # Basic 认证被拒：多见于使用了项目/仓库级 token（官方要求用 Bearer），回退重试
-            logger.warn("Bitbucket rejected the basic authentication, retrying with bearer authentication.")
-            response = requests.post(url, headers=self._auth_headers(use_basic=False), json=payload,
-                                     verify=self.verify, timeout=DEFAULT_TIMEOUT)
-        return response
+        return requests.post(url, headers=self._auth_headers(), json=payload, verify=self.verify,
+                             timeout=DEFAULT_TIMEOUT)
 
 
 class PullRequestHandler:
     """Bitbucket Server / Data Center Pull Request 事件处理器。"""
 
-    def __init__(self, webhook_data: dict, bitbucket_token: str, bitbucket_url: str,
-                 bitbucket_username: Optional[str] = None):
+    def __init__(self, webhook_data: dict, bitbucket_token: str, bitbucket_url: str):
         self.webhook_data = webhook_data
-        self.client = BitbucketClient(bitbucket_url, bitbucket_token, bitbucket_username)
+        self.client = BitbucketClient(bitbucket_url, bitbucket_token)
         self.event_type = None
         self.action = None
         self.pull_request_id = None
@@ -509,10 +492,9 @@ class PullRequestHandler:
 class PushHandler:
     """Bitbucket Server / Data Center Push（repo:refs_changed）事件处理器。"""
 
-    def __init__(self, webhook_data: dict, bitbucket_token: str, bitbucket_url: str,
-                 bitbucket_username: Optional[str] = None):
+    def __init__(self, webhook_data: dict, bitbucket_token: str, bitbucket_url: str):
         self.webhook_data = webhook_data
-        self.client = BitbucketClient(bitbucket_url, bitbucket_token, bitbucket_username)
+        self.client = BitbucketClient(bitbucket_url, bitbucket_token)
         self.event_type = None
         self.project_key = None
         self.repository_slug = None

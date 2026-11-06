@@ -509,14 +509,13 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
 
 
 def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str, bitbucket_url: str,
-                                        bitbucket_url_slug: str, bitbucket_username: str = ''):
+                                        bitbucket_url_slug: str):
     '''
     处理Bitbucket Server/Data Center Pull Request 事件
     :param webhook_data:
     :param bitbucket_token:
     :param bitbucket_url:
     :param bitbucket_url_slug:
-    :param bitbucket_username:
     :return:
     '''
     merge_review_only_protected_branches = os.environ.get('MERGE_REVIEW_ONLY_PROTECTED_BRANCHES_ENABLED', '0') == '1'
@@ -525,7 +524,7 @@ def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str
 
     try:
         # 解析Webhook数据
-        handler = BitbucketPullRequestHandler(webhook_data, bitbucket_token, bitbucket_url, bitbucket_username)
+        handler = BitbucketPullRequestHandler(webhook_data, bitbucket_token, bitbucket_url)
         logger.info('Bitbucket Pull Request event received')
 
         # 如果开启了仅review protected branches的，判断当前目标分支是否为protected branches
@@ -595,19 +594,18 @@ def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str
 
 
 def handle_bitbucket_push_event(webhook_data: dict, bitbucket_token: str, bitbucket_url: str,
-                                bitbucket_url_slug: str, bitbucket_username: str = ''):
+                                bitbucket_url_slug: str):
     '''
     处理Bitbucket Server/Data Center Push(repo:refs_changed)事件
     :param webhook_data:
     :param bitbucket_token:
     :param bitbucket_url:
     :param bitbucket_url_slug:
-    :param bitbucket_username:
     :return:
     '''
     push_review_enabled = os.environ.get('PUSH_REVIEW_ENABLED', '0') == '1'
     try:
-        handler = BitbucketPushHandler(webhook_data, bitbucket_token, bitbucket_url, bitbucket_username)
+        handler = BitbucketPushHandler(webhook_data, bitbucket_token, bitbucket_url)
         logger.info('Bitbucket Push event received')
         commits = handler.get_push_commits()
         if not commits:
