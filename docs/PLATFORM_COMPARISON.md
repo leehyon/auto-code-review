@@ -1,6 +1,6 @@
-# GitLab / GitHub / Gitea 平台处理差异对比
+# GitLab / GitHub / Gitea / Bitbucket 平台处理差异对比
 
-本文档详细说明了本系统在处理 GitLab、GitHub 和 Gitea 三个代码托管平台时的差异和原因。
+本文档详细说明了本系统在处理 GitLab、GitHub、Gitea 和 Bitbucket Server/Data Center 四个代码托管平台时的差异和原因。
 
 ## 📋 目录
 
@@ -13,18 +13,20 @@
 
 ## 快速对比表
 
-| 特性 | GitLab | GitHub | Gitea |
-|------|--------|--------|-------|
-| **Webhook 识别方式** | `object_kind` 字段 | `X-GitHub-Event` Header | `X-Gitea-Event` Header |
-| **事件类型字段** | `merge_request` / `push` | `pull_request` / `push` | `pull_request` / `push` |
-| **API 基础路径** | `/api/v4/` | `/api/v3/` | `/api/v1/` |
-| **认证方式** | `Private-Token` Header | `Authorization: token` Header | `Authorization: token` Header |
-| **获取变更 API** | `/merge_requests/{iid}/changes` | `/pulls/{number}/files` | `/pulls/{number}/files` |
-| **添加评论 API** | `/merge_requests/{iid}/notes` | `/issues/{number}/comments` | `/issues/{number}/comments` 或 `/pulls/{number}/comments` |
-| **Commit 评论支持** | ✅ 支持 | ✅ 支持 | ⚠️ 1.13.0+ 支持 |
-| **Issue 模式** | ❌ 不支持 | ❌ 不支持 | ✅ 支持（推荐） |
-| **数据格式** | 自定义格式 | GitHub 标准格式 | GitHub 兼容格式 |
-| **Diff 获取方式** | 直接返回完整 diff | 直接返回完整 diff | 可能需要多次 API 调用 |
+| 特性 | GitLab | GitHub | Gitea | Bitbucket DC |
+|------|--------|--------|-------|--------------|
+| **Webhook 识别方式** | `object_kind` 字段 | `X-GitHub-Event` Header | `X-Gitea-Event` Header | `X-Event-Key` Header |
+| **事件类型字段** | `merge_request` / `push` | `pull_request` / `push` | `pull_request` / `push` | `pr:*` / `repo:refs_changed` |
+| **API 基础路径** | `/api/v4/` | `/api/v3/` | `/api/v1/` | `/rest/api/1.0/` |
+| **认证方式** | `Private-Token` Header | `Authorization: token` Header | `Authorization: token` Header | HTTP Basic（用户名 + PAT） |
+| **仓库标识** | 数字 project ID | `owner/repo` 路径 | `owner/repo` 路径 | `projectKey` + `repositorySlug` |
+| **获取变更 API** | `/merge_requests/{iid}/changes` | `/pulls/{number}/files` | `/pulls/{number}/files` | `/pull-requests/{id}.diff`（原始文本） |
+| **添加评论 API** | `/merge_requests/{iid}/notes` | `/issues/{number}/comments` | `/issues/{number}/comments` 或 `/pulls/{number}/comments` | `/pull-requests/{id}/comments` |
+| **Commit 评论支持** | ✅ 支持 | ✅ 支持 | ⚠️ 1.13.0+ 支持 | ✅ 支持 |
+| **Issue 模式** | ❌ 不支持 | ❌ 不支持 | ✅ 支持（推荐） | ❌ 不支持 |
+| **受保护分支判断** | `/protected_branches` | `/branches?protected=true` | `/branches?protected=true` | `/branch-permissions/.../restrictions` |
+| **数据格式** | 自定义格式 | GitHub 标准格式 | GitHub 兼容格式 | Atlassian 自定义格式 |
+| **Diff 获取方式** | 直接返回完整 diff | 直接返回完整 diff | 可能需要多次 API 调用 | 原始 unified diff 文本，需自行切分 |
 
 ---
 
@@ -56,6 +58,14 @@ gitea_event = request.headers.get('X-Gitea-Event')  # "pull_request" 或 "push"
 
 **原因**：Gitea 为了兼容 GitHub 的生态，采用了类似的 Header 设计。注意：Gitea 会同时发送 `X-GitHub-Event` 和 `X-Gitea-Event`，所以需要优先检查 `X-Gitea-Event`。
 
+#### Bitbucket Server/Data Center
+```python
+# 通过 HTTP Header 识别
+bitbucket_event = request.headers.get('X-Event-Key')  # "pr:opened" 或 "repo:refs_changed"
+```
+
+**原因**：Bitbucket 沿用 Atlassian 产品的统一事件命名，采用 `<资源>:<动作>` 的层级命名法。Bitbucket Cloud 使用同一 Header 但取值不同（`pullrequest:created`、`repo:push`），系统通过取值区分两者，避免把 Cloud 事件误判为 DC 事件。
+
 ---
 
 ### 2. 事件命名差异
@@ -65,10 +75,12 @@ gitea_event = request.headers.get('X-Gitea-Event')  # "pull_request" 或 "push"
 | **GitLab** | `merge_request` | `push` |
 | **GitHub** | `pull_request` | `push` |
 | **Gitea** | `pull_request` | `push` |
+| **Bitbucket DC** | `pr:opened` / `pr:from_ref_updated` | `repo:refs_changed` |
 
 **原因**：
 - **GitLab** 使用 "Merge Request" 这个术语，所以事件名为 `merge_request`
 - **GitHub** 和 **Gitea** 使用 "Pull Request" 这个术语，所以事件名为 `pull_request`
+- **Bitbucket DC** 使用 "Pull Request" 术语，但事件名带 `pr:` 前缀以体现 Atlassian 的层级命名（`pr:` 下还有 `pr:reviewer:approved`、`pr:comment:added` 等子事件）
 - 虽然术语不同，但功能相同：都是将代码从一个分支合并到另一个分支的请求
 
 ---
@@ -92,15 +104,24 @@ GET /api/v3/repos/{owner}/{repo}/pulls/{number}/files
 GET /api/v1/repos/{owner}/{repo}/pulls/{number}/files
 ```
 
+**Bitbucket Server/Data Center**
+```
+GET /rest/api/1.0/projects/{projectKey}/repos/{repositorySlug}/pull-requests/{pullRequestId}.diff
+```
+
 **差异点**：
 - GitLab 使用项目 ID 和内部 ID（iid）
 - GitHub/Gitea 使用仓库路径（owner/repo）和 PR 编号
-- API 版本号不同（v4 vs v3 vs v1）
+- Bitbucket DC 使用项目 Key（projectKey）+ 仓库 slug（repositorySlug）+ PR 编号
+- API 版本号不同（v4 vs v3 vs v1 vs rest/api/1.0）
+- Bitbucket DC 的 `.diff` 接口返回的是**原始 unified diff 文本**，需要自行按文件切分；
+  其余平台的接口返回结构化的文件列表（可直接拿到每个文件的 patch）
 
 **原因**：
 - 每个平台都有自己的 API 设计理念和版本管理策略
 - GitLab 使用数字 ID 更利于内部系统管理
 - GitHub/Gitea 使用路径更符合 RESTful 设计，更直观
+- Bitbucket DC 面向企业内网自建场景，优先保证 diff 输出与 Git 命令行一致，便于用户核对
 
 ---
 
@@ -123,15 +144,22 @@ POST /api/v1/repos/{owner}/{repo}/issues/{number}/comments
 POST /api/v1/repos/{owner}/{repo}/pulls/{number}/comments
 ```
 
+**Bitbucket Server/Data Center**
+```
+POST /rest/api/1.0/projects/{projectKey}/repos/{repositorySlug}/pull-requests/{pullRequestId}/comments
+```
+
 **差异点**：
 - GitLab 有专门的 `notes` 端点
 - GitHub 将 PR 视为 Issue 的一种，所以使用 `issues` 端点
 - Gitea 支持两种方式，但不同版本可能支持不同的端点
+- Bitbucket DC 为 PR 提供独立的 `comments` 端点，评论内容放在 `text` 字段（而非 GitHub 的 `body`）
 
 **原因**：
 - GitLab 将 MR 评论和 Issue 评论分开管理
 - GitHub 统一使用 Issue 系统，PR 是 Issue 的子类型
 - Gitea 为了兼容性，同时支持两种方式
+- Bitbucket DC 沿用 Atlassian 的 REST 规范，评论体统一为 `{"text": "..."}`
 
 ---
 
@@ -157,9 +185,24 @@ POST /api/v1/repos/{owner}/{repo}/pulls/{number}/comments
 }
 ```
 
+**Bitbucket Server/Data Center**
+```json
+{
+  "repository": {
+    "slug": "repo",
+    "name": "repo",
+    "project": {
+      "key": "PROJ"
+    }
+  }
+}
+```
+
 **原因**：
 - GitLab 使用数字 ID 作为主要标识
 - GitHub/Gitea 使用字符串路径作为主要标识
+- Bitbucket DC 使用两级标识：`project.key`（项目 Key）+ `repository.slug`（仓库 slug），
+  因为同一个仓库名可以存在于不同项目中，仅用 slug 不够唯一
 - 数字 ID 更利于数据库查询，字符串路径更利于人类阅读
 
 ---
@@ -385,6 +428,14 @@ GITEA_URL=https://your-gitea.com
 GITEA_USE_ISSUE_MODE=1  # 推荐启用
 ```
 
+#### Bitbucket Server/Data Center
+```bash
+BITBUCKET_URL=https://bitbucket.example.com
+BITBUCKET_ACCESS_TOKEN=your_token
+BITBUCKET_USERNAME=your_username  # HTTP Basic 认证需要
+BITBUCKET_VERIFY_SSL=0  # 自签证书场景保持关闭
+```
+
 ### 3. 常见问题处理
 
 #### 问题：Gitea 无法添加评论
@@ -416,11 +467,33 @@ GITEA_USE_ISSUE_MODE=1  # 推荐启用
 2. 确认项目 ID 是否正确
 3. 系统会自动重试 3 次，等待 10 秒后重试
 
+#### 问题：Bitbucket Webhook 未被识别
+**解决方案**：
+1. 确认请求头包含 `X-Event-Key`（Bitbucket Server/Data Center 独有）
+2. 确认事件类型为 DC 风格（`pr:opened`、`pr:from_ref_updated`、`repo:refs_changed`）；
+   Bitbucket Cloud 的 `pullrequest:created` / `repo:push` 当前版本不支持
+
+#### 问题：Bitbucket 提示缺少 access token
+**解决方案**：
+1. 配置环境变量 `BITBUCKET_ACCESS_TOKEN` 与 `BITBUCKET_USERNAME`
+2. 或在 Bitbucket Webhook 上配置 HTTP Basic 认证（系统会解析 `Authorization` Header）
+3. 确认 Token 勾选了 `Repository read` / `Repository write` 权限
+
+#### 问题：Bitbucket 提示缺少 URL
+**解决方案**：
+1. 配置环境变量 `BITBUCKET_URL`（推荐，保留 context path）
+2. 若未配置，系统会尝试从 payload 中的仓库链接推导；确认 payload 里包含 `links.self` 字段
+
+#### 问题：Bitbucket 自建实例 SSL 证书校验失败
+**解决方案**：
+1. 保持 `BITBUCKET_VERIFY_SSL=0`（默认，自签证书场景关闭校验）
+2. 若需开启校验，请将实例证书签发到系统信任的 CA，或配置系统级 CA 证书
+
 ---
 
 ## 总结
 
-虽然三个平台在 API 设计、数据格式等方面存在差异，但本系统通过统一的抽象层和适配器模式，实现了对三个平台的无缝支持。用户只需要配置相应的 Token 和 URL，系统就能自动识别平台类型并调用对应的处理逻辑。
+虽然各平台在 API 设计、数据格式等方面存在差异，但本系统通过统一的抽象层和适配器模式，实现了对多个平台的无缝支持。用户只需要配置相应的 Token 和 URL，系统就能自动识别平台类型并调用对应的处理逻辑。
 
 **核心设计理念**：
 - **统一接口**：对外提供统一的 Webhook 端点
@@ -429,4 +502,16 @@ GITEA_USE_ISSUE_MODE=1  # 推荐启用
 - **容错机制**：针对不同平台的特性，实现多种 fallback 方案
 
 这样的设计既保证了代码的可维护性，又提供了良好的用户体验。
+
+---
+
+## 支持范围说明
+
+| 平台 | 支持形态 | 状态 |
+|------|---------|------|
+| GitLab | 自建 / SaaS | ✅ 支持 |
+| GitHub | SaaS | ✅ 支持 |
+| Gitea | 自建 | ✅ 支持 |
+| Bitbucket | **Server / Data Center（自建）** | ✅ 支持 |
+| Bitbucket | Cloud（bitbucket.org） | ❌ 暂不支持（API 与 payload 结构不同） |
 

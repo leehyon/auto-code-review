@@ -11,10 +11,10 @@
 - 📢 消息实时送达
   - 审查结果 **一键推送** 到 **钉钉、企业微信、飞书**  及时响应，代码问题无所遁形！
 - 📅 自动生成开发日报
-  - 基于 **GitHub / GitLab / Gitea Commit** 记录，自动梳理每日开发动态：  
+  - 基于 **GitHub / GitLab / Gitea / Bitbucket Commit** 记录，自动梳理每日开发动态：  
 谁在认真敲代码，谁在划水，一清二楚 😼。
 - 🔗 多平台支持
-  - 全面支持 **GitLab、GitHub、Gitea** 三大主流代码托管平台，一套系统，多平台通用！
+  - 全面支持 **GitLab、GitHub、Gitea、Bitbucket Server/Data Center** 四大主流代码托管平台，一套系统，多平台通用！
 - 📊 数据可视化 Dashboard
   - 集中展示所有 **Code Review 记录**，提供清晰的：
     - 项目整体统计  
@@ -53,7 +53,7 @@
 
 ## 原理
 
-在开发者向 **GitLab / GitHub / Gitea** 提交代码（包括 Merge Request/Pull Request 创建或 Push 操作）时，代码托管平台会根据预设的 Webhook 配置触发回调请求，调用本系统提供的接口。系统接收到事件后，将解析提交内容，并通过集成的第三方大语言模型对代码变更进行静态审查。
+在开发者向 **GitLab / GitHub / Gitea / Bitbucket** 提交代码（包括 Merge Request/Pull Request 创建或 Push 操作）时，代码托管平台会根据预设的 Webhook 配置触发回调请求，调用本系统提供的接口。系统接收到事件后，将解析提交内容，并通过集成的第三方大语言模型对代码变更进行静态审查。
 
 审查内容包括但不限于：代码规范检查、潜在错误识别、安全风险分析及可维护性建议。完成审查后，系统会将结果以评论的形式自动回写至对应的 Merge Request/Pull Request 或 Commit 页面（Gitea 还支持创建 Issue 来存储审查结果），确保审查反馈能够实时集成至开发工作流中，从而提升代码质量与团队协作效率。
 
@@ -295,6 +295,46 @@ GITEA_USE_ISSUE_MODE=1
   - 可审计、可追踪、可统计
   - 支持工单化管理
   - 不依赖 Commit Comments API（某些 Gitea 版本可能不支持）
+
+#### Bitbucket Server/Data Center Webhook 配置
+
+> 本系统支持 **Bitbucket Server / Data Center（自建部署）**，使用 REST API 1.0 接口。
+
+**1. 创建 Access Token**
+
+在 Bitbucket 中点击头像 → **Manage account** → **HTTP access tokens** → **Create HTTP access token**，勾选 `Repository read` 与 `Repository write` 权限后创建，复制生成的 Token。
+
+**2. 配置 Webhook**
+
+在 Bitbucket 项目/仓库设置中，进入 **Repository settings** → **Webhooks** → **Add webhook**：
+
+- URL：http://your-server-ip:5001/review/webhook
+- Events：勾选 **Pull request** 与 **Repository**（选择 **Push**）
+- Secret：可选
+
+**3. 环境变量配置**
+
+在 `.env` 文件中配置：
+
+```bash
+# Bitbucket 实例地址（自建部署），例如 https://bitbucket.example.com
+BITBUCKET_URL=https://bitbucket.example.com
+# Personal Access Token
+BITBUCKET_ACCESS_TOKEN=your_bitbucket_access_token_here
+# HTTP Basic 认证所需的用户名（配合 Personal Access Token 使用）
+BITBUCKET_USERNAME=your_bitbucket_username
+# 自建实例使用自签证书时，保持 0 关闭证书校验
+BITBUCKET_VERIFY_SSL=0
+```
+
+**Bitbucket 特殊说明**：
+
+- **事件识别**：Bitbucket 通过 `X-Event-Key` 请求头传递事件类型（`pr:opened`、`pr:from_ref_updated`、`repo:refs_changed` 等），与 GitHub/Gitea 的 Header 不冲突，系统可同时接入多个平台。
+- **触发时机**：仅在 `pr:opened`（PR 创建）和 `pr:from_ref_updated`（源分支更新）时进行 PR 审查；`pr:merged`、`pr:comment:added` 等事件自动忽略。
+- **实例地址推导**：未配置 `BITBUCKET_URL` 时，系统会尝试从 webhook payload 中的仓库链接自动推导（含 context path）。
+- **凭证来源**：优先使用环境变量；若未配置，则回退使用 Webhook 上配置的 HTTP Basic 认证（`Authorization` Header）。
+- **受保护分支**：通过 Bitbucket 的分支限制（branch restrictions）接口判断，需要账号具备仓库管理员权限。
+- **Bitbucket Cloud 不适用**：Bitbucket Cloud（bitbucket.org）使用 REST API 2.0 与不同的 payload 结构，当前版本不支持。
 
 ### 配置消息推送
 
@@ -563,6 +603,11 @@ GITHUB_URL=https://api.github.com
 GITEA_ACCESS_TOKEN=your_gitea_token_here
 GITEA_URL=https://your-gitea-instance.com
 GITEA_USE_ISSUE_MODE=1  # 是否使用Issue模式存储审查结果
+
+# Bitbucket Server/Data Center配置
+BITBUCKET_URL=https://bitbucket.example.com
+BITBUCKET_ACCESS_TOKEN=your_bitbucket_access_token_here
+BITBUCKET_USERNAME=your_bitbucket_username
 
 # 消息推送配置
 DINGTALK_ENABLED=1
