@@ -172,6 +172,54 @@ class TestParseUnifiedDiff(unittest.TestCase):
         self.assertEqual(changes[0]['new_path'], 'src/App.java')
         self.assertEqual(changes[0]['additions'], 1)
 
+    def test_parse_bitbucket_src_dst_prefix(self):
+        """Bitbucket DC 的 diff 使用 src:// / dst:// 前缀，不是 git 的 a/ b/。"""
+        raw = """diff --git src://Sources/ASW/App.c dst://Sources/ASW/App.c
+index 8c10770..b5a6d27 100644
+--- src://Sources/ASW/App.c
++++ dst://Sources/ASW/App.c
+@@ -30,3 +30,4 @@
+ int a = 1;
+-int b = 2;
++int b = 3;
++int c = 4;
+"""
+        changes = parse_unified_diff(raw)
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['new_path'], 'Sources/ASW/App.c')
+        self.assertEqual(changes[0]['old_path'], 'Sources/ASW/App.c')
+        self.assertEqual(changes[0]['additions'], 2)
+        self.assertEqual(changes[0]['deletions'], 1)
+
+    def test_parse_bitbucket_deleted_file(self):
+        raw = """diff --git src://old.txt dst://old.txt
+deleted file mode 100644
+--- src://old.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-gone
+-text
+"""
+        changes = parse_unified_diff(raw)
+        self.assertEqual(changes, [])
+
+    def test_parse_bitbucket_binary_file_is_skipped(self):
+        """二进制文件没有 --- / +++ 行，应被跳过且不影响后续文件。"""
+        raw = """diff --git src://logo.png dst://logo.png
+index 1111111..2222222 100644
+Binary files src://logo.png and dst://logo.png differ
+diff --git src://App.c dst://App.c
+index 3333333..4444444 100644
+--- src://App.c
++++ dst://App.c
+@@ -1,2 +1,3 @@
+ int a = 1;
++int b = 2;
+"""
+        changes = parse_unified_diff(raw)
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['new_path'], 'App.c')
+
 
 class TestFilterChanges(unittest.TestCase):
 
@@ -336,6 +384,23 @@ class TestBitbucketClient(unittest.TestCase):
         with mock.patch('src.bitbucket.webhook_handler.requests.get',
                         return_value=FakeResponse(200, '')):
             self.assertEqual(client.get_text('/x'), '')
+
+    def test_get_text_requests_text_plain(self):
+        """Bitbucket 的 .diff 接口只接受 text/plain，用 application/json 会返回 406。"""
+        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        with mock.patch('src.bitbucket.webhook_handler.requests.get',
+                        return_value=FakeResponse(200, 'diff')) as get:
+            client.get_text('/x')
+        headers = get.call_args[1]['headers']
+        self.assertEqual(headers['Accept'], 'text/plain')
+
+    def test_get_json_requests_application_json(self):
+        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        with mock.patch('src.bitbucket.webhook_handler.requests.get',
+                        return_value=FakeResponse(200, '{}', {})) as get:
+            client.get_json('/x')
+        headers = get.call_args[1]['headers']
+        self.assertEqual(headers['Accept'], 'application/json')
 
 
 class TestPullRequestApiCalls(unittest.TestCase):

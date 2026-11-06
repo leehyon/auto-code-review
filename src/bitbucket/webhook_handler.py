@@ -79,7 +79,12 @@ def filter_changes(changes: list) -> list:
 
 
 def _strip_diff_prefix(path: str) -> str:
-    """去掉 unified diff 中的 a/ b/ 前缀。"""
+    """
+    去掉 diff 中的路径前缀。
+
+    Bitbucket Server/Data Center 使用 ``src://`` / ``dst://`` 前缀，
+    标准 git diff 则使用 ``a/`` / ``b/`` 前缀，两者都需要处理。
+    """
     if not path:
         return ''
     path = path.strip()
@@ -87,6 +92,9 @@ def _strip_diff_prefix(path: str) -> str:
         path = path[1:-1]
     if path == '/dev/null':
         return ''
+    for prefix in ('src://', 'dst://'):
+        if path.startswith(prefix):
+            return path[len(prefix):]
     for prefix in ('a/', 'b/'):
         if path.startswith(prefix):
             return path[len(prefix):]
@@ -242,19 +250,24 @@ class BitbucketClient:
         """拼接插件 REST 接口地址，例如 branch-permissions。"""
         return f"{self.base_url}/rest/{plugin}/latest{path}"
 
-    def get(self, path: str, params: dict = None, plugin: str = None) -> requests.Response:
+    def get(self, path: str, params: dict = None, plugin: str = None,
+            accept: str = 'application/json') -> requests.Response:
         url = self.plugin_url(plugin, path) if plugin else self.api_url(path)
         logger.debug(f"Bitbucket GET {url}, params={params}")
-        return requests.get(url, headers=self.headers, params=params or {}, verify=self.verify,
+        headers = dict(self.headers)
+        headers['Accept'] = accept
+        return requests.get(url, headers=headers, params=params or {}, verify=self.verify,
                             timeout=DEFAULT_TIMEOUT)
 
     def get_text(self, path: str, params: dict = None) -> Optional[str]:
         """
         GET 请求并返回原始文本（用于 .diff / diff 这类返回文本的接口）。
 
+        注意：Bitbucket 的 .diff 接口只接受 text/plain，用 application/json 请求会返回 406。
+
         请求失败返回 None，接口正常但内容为空返回空字符串，调用方据此区分重试。
         """
-        response = self.get(path, params=params)
+        response = self.get(path, params=params, accept='text/plain')
         if response.status_code != 200:
             logger.warn(f"Failed to get raw diff from Bitbucket: {response.status_code}, {response.text[:200]}")
             return None

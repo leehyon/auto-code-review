@@ -3,12 +3,12 @@ venv/
 test/
 .idea/
 
-log/*
-!log/.gitkeep
+logs/*
+!logs/.gitkeep
 data/*
 !data/.gitkeep
 
-conf/.env
+config/.env
 .pyc
 __pycache__/
 .cursorignore
