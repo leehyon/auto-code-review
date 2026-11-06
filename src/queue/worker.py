@@ -7,7 +7,7 @@ from src.event.event_manager import event_manager
 from src.gitlab.webhook_handler import filter_changes, MergeRequestHandler, PushHandler
 from src.github.webhook_handler import filter_changes as filter_github_changes, PullRequestHandler as GithubPullRequestHandler, PushHandler as GithubPushHandler
 from src.gitea.webhook_handler import filter_changes as filter_gitea_changes, PullRequestHandler as GiteaPullRequestHandler, PushHandler as GiteaPushHandler
-from src.gitea.webhook_handler import filter_changes as filter_gitea_changes, PullRequestHandler as GiteaPullRequestHandler, PushHandler as GiteaPushHandler
+from src.bitbucket.webhook_handler import filter_changes as filter_bitbucket_changes, PullRequestHandler as BitbucketPullRequestHandler, PushHandler as BitbucketPushHandler
 from src.utils.code_reviewer import CodeReviewer
 from src.utils.messaging import notifier
 from src.utils.log import logger
@@ -501,6 +501,155 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
                 additions=additions,
                 deletions=deletions,
             ))
+
+    except Exception as e:
+        error_message = f'服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        notifier.send_notification(content=error_message)
+        logger.error('出现未知错误: %s', error_message)
+
+
+def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str, bitbucket_url: str,
+                                        bitbucket_url_slug: str, bitbucket_username: str = ''):
+    '''
+    处理Bitbucket Server/Data Center Pull Request 事件
+    :param webhook_data:
+    :param bitbucket_token:
+    :param bitbucket_url:
+    :param bitbucket_url_slug:
+    :param bitbucket_username:
+    :return:
+    '''
+    merge_review_only_protected_branches = os.environ.get('MERGE_REVIEW_ONLY_PROTECTED_BRANCHES_ENABLED', '0') == '1'
+    merge_review_only_branch_name_str = os.environ.get('MERGE_REVIEW_ONLY_BRANCH_NAME', '')  # 需要review的分支名称，逗号分隔
+    merge_review_only_branch_names = [b.strip() for b in merge_review_only_branch_name_str.split(',') if b.strip()] if merge_review_only_branch_name_str else []
+
+    try:
+        # 解析Webhook数据
+        handler = BitbucketPullRequestHandler(webhook_data, bitbucket_token, bitbucket_url, bitbucket_username)
+        logger.info('Bitbucket Pull Request event received')
+
+        # 如果开启了仅review protected branches的，判断当前目标分支是否为protected branches
+        if merge_review_only_protected_branches and not handler.target_branch_protected():
+            logger.info("Pull Request target branch not match protected branches, ignored.")
+            return
+
+        # 判断分支名称进行过滤
+        if merge_review_only_branch_names and handler.target_branch not in merge_review_only_branch_names:
+            logger.info(f"Pull Request event, branch={handler.target_branch}, ignored.")
+            return
+
+        # 仅在PR创建或源分支更新时进行Code Review
+        if handler.action not in ['opened', 'from_ref_updated']:
+            logger.info(f"Pull Request event, action={handler.action}, ignored.")
+            return
+
+        # 获取Pull Request的changes
+        changes = handler.get_pull_request_changes()
+        logger.info('changes: %s', changes)
+        changes = filter_bitbucket_changes(changes)
+        if not changes:
+            logger.info('未检测到有关代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
+            return
+        # 统计本次新增、删除的代码总数
+        additions = 0
+        deletions = 0
+        for item in changes:
+            additions += item.get('additions', 0)
+            deletions += item.get('deletions', 0)
+
+        # 获取Pull Request的commits
+        commits = handler.get_pull_request_commits()
+        if not commits:
+            logger.error('Failed to get commits')
+            return
+
+        # review 代码
+        commits_text = ';'.join(commit.get('title', '') for commit in commits)
+        review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+
+        # 将review结果提交到Bitbucket的 comments
+        handler.add_pull_request_notes(f'Auto Review Result: \n{review_result}')
+
+        # dispatch pull_request_reviewed event
+        event_manager['merge_request_reviewed'].send(
+            MergeRequestReviewEntity(
+                project_name=handler.repository_name,
+                author=handler.author,
+                source_branch=handler.source_branch,
+                target_branch=handler.target_branch,
+                updated_at=int(datetime.now().timestamp()),
+                commits=commits,
+                score=CodeReviewer.parse_review_score(review_text=review_result),
+                url=handler.pull_request_url,
+                review_result=review_result,
+                url_slug=bitbucket_url_slug,
+                webhook_data=webhook_data,
+                additions=additions,
+                deletions=deletions,
+            ))
+
+    except Exception as e:
+        error_message = f'AI Code Review 服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        notifier.send_notification(content=error_message)
+        logger.error('出现未知错误: %s', error_message)
+
+
+def handle_bitbucket_push_event(webhook_data: dict, bitbucket_token: str, bitbucket_url: str,
+                                bitbucket_url_slug: str, bitbucket_username: str = ''):
+    '''
+    处理Bitbucket Server/Data Center Push(repo:refs_changed)事件
+    :param webhook_data:
+    :param bitbucket_token:
+    :param bitbucket_url:
+    :param bitbucket_url_slug:
+    :param bitbucket_username:
+    :return:
+    '''
+    push_review_enabled = os.environ.get('PUSH_REVIEW_ENABLED', '0') == '1'
+    try:
+        handler = BitbucketPushHandler(webhook_data, bitbucket_token, bitbucket_url, bitbucket_username)
+        logger.info('Bitbucket Push event received')
+        commits = handler.get_push_commits()
+        if not commits:
+            logger.error('Failed to get commits')
+            return
+
+        review_result = None
+        score = 0
+        additions = 0
+        deletions = 0
+        if push_review_enabled:
+            # 获取PUSH的changes
+            changes = handler.get_push_changes()
+            logger.info('changes: %s', changes)
+            changes = filter_bitbucket_changes(changes)
+            if not changes:
+                logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
+            review_result = "关注的文件没有修改"
+
+            if len(changes) > 0:
+                commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
+                review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+                score = CodeReviewer.parse_review_score(review_text=review_result)
+                for item in changes:
+                    additions += item.get('additions', 0)
+                    deletions += item.get('deletions', 0)
+            # 将review结果提交到Bitbucket的 comments
+            handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+
+        event_manager['push_reviewed'].send(PushReviewEntity(
+            project_name=handler.repository_name,
+            author=handler.author,
+            branch=handler.branch_name,
+            updated_at=int(datetime.now().timestamp()),  # 当前时间
+            commits=commits,
+            score=score,
+            review_result=review_result,
+            url_slug=bitbucket_url_slug,
+            webhook_data=webhook_data,
+            additions=additions,
+            deletions=deletions,
+        ))
 
     except Exception as e:
         error_message = f'服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
