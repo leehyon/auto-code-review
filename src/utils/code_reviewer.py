@@ -74,6 +74,9 @@ class CodeReviewer(BaseReviewer):
             'js': 'javascript_review_prompt',
             'ts': 'javascript_review_prompt',
             'py': 'python_review_prompt',
+            'autosar': 'autosar_review_prompt',
+            'xml': 'code_review_prompt',
+            'default': 'code_review_prompt',
         }
 
     def _detect_language_from_diff(self, diffs_text: str) -> str:
@@ -95,11 +98,16 @@ class CodeReviewer(BaseReviewer):
             '.c': 'c',
             '.h': 'cpp',
             '.hpp': 'cpp',
+            '.arxml': 'autosar',
+            '.xml': 'xml',
         }
         
         # 统计各种语言的文件数量
         language_counts = {}
         vue3_indicators = 0
+        # 是否从 diff 中解析到了文件路径。只要解析到了路径，语言就应该由扩展名决定，
+        # 不能退回内容启发式——否则 arxml/XML 里的关键字会被误判成 JavaScript/Python
+        detected_file_paths = False
         
         # 尝试多种文件路径模式
         file_patterns = [
@@ -124,6 +132,7 @@ class CodeReviewer(BaseReviewer):
                     break
             
             if file_path:
+                detected_file_paths = True
                 # 获取文件扩展名
                 ext = os.path.splitext(file_path)[1].lower()
                 if ext in file_extensions:
@@ -142,7 +151,8 @@ class CodeReviewer(BaseReviewer):
                 logger.info(f"检测到Vue3特征: {line.strip()}")
         
         # 如果没有通过文件路径检测到语言，尝试从内容中检测
-        if not language_counts:
+        # 只有在完全没有解析到文件路径时才允许内容启发式
+        if not language_counts and not detected_file_paths:
             # 检查是否包含Vue相关的内容
             if any(indicator in diffs_text.lower() for indicator in [
                 '<template>', '<script>', '<style>', 'vue', '.vue'
@@ -178,14 +188,17 @@ class CodeReviewer(BaseReviewer):
             
             logger.info(f"检测到主要编程语言: {primary_language}")
             return primary_language
-        
-        logger.info("未检测到特定编程语言，使用通用审查提示词")
+
+        if detected_file_paths:
+            logger.info("已识别出变更文件，但其扩展名不在语言映射表中，使用通用审查提示词")
+        else:
+            logger.info("未检测到特定编程语言，使用通用审查提示词")
         return 'default'
 
     def _get_appropriate_prompt(self, diffs_text: str) -> str:
         """根据代码内容选择合适的提示词"""
         detected_lang = self._detect_language_from_diff(diffs_text)
-        prompt_key = self.language_prompts.get(detected_lang, 'vue3_review_prompt')
+        prompt_key = self.language_prompts.get(detected_lang, 'code_review_prompt')
         
         # 添加详细的调试日志
         logger.info(f"语言检测结果: {detected_lang}")
@@ -352,7 +365,7 @@ class CodeReviewer(BaseReviewer):
                 detected_lang = self._detect_language_from_changes(changes_data)
                 logger.info(f"从changes数据中检测到的语言: {detected_lang}")
         
-        prompt_key = self.language_prompts.get(detected_lang, 'vue3_review_prompt')
+        prompt_key = self.language_prompts.get(detected_lang, 'code_review_prompt')
         style = os.getenv("REVIEW_STYLE", "professional")
         
         logger.info(f"检测到的语言对应的提示词: {prompt_key}")
@@ -405,6 +418,8 @@ class CodeReviewer(BaseReviewer):
             '.c': 'c',
             '.h': 'cpp',
             '.hpp': 'cpp',
+            '.arxml': 'autosar',
+            '.xml': 'xml',
         }
         
         language_counts = {}

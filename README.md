@@ -142,7 +142,7 @@ LLM_PROVIDER=deepseek
 DEEPSEEK_API_KEY={YOUR_DEEPSEEK_API_KEY}
 
 #支持review的文件类型(未配置的文件类型不会被审查)
-SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql
+SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.ts,.jsx,.tsx,.arxml,.xml
 
 #钉钉消息推送: 0不发送钉钉消息,1发送钉钉消息
 DINGTALK_ENABLED=0
@@ -546,10 +546,10 @@ code_review_prompt:
 
 **位置**: `src/gitlab/webhook_handler.py`, `src/github/webhook_handler.py`
 
-通过 `SUPPORTED_EXTENSIONS` 环境变量控制哪些文件类型会被审查：
+通过 `SUPPORTED_EXTENSIONS` 环境变量控制哪些文件类型会被审查。`.arxml` 用于 AUTOSAR ARXML 配置，`.xml` 用于通用 XML：
 
 ```bash
-SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql
+SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.ts,.jsx,.tsx,.arxml,.xml
 ```
 
 ### Token限制配置
@@ -684,7 +684,7 @@ DEEPSEEK_API_MODEL=deepseek-chat
 # 审查配置
 REVIEW_STYLE=professional
 REVIEW_MAX_TOKENS=10000
-SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql
+SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.ts,.jsx,.tsx,.arxml,.xml
 
 # 功能开关
 PUSH_REVIEW_ENABLED=1
