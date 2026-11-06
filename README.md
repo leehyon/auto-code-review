@@ -371,7 +371,7 @@ python3 check_bitbucket_token.py
 
 - URL：http://your-server-ip:5001/review/webhook
 - Events：勾选 **Pull request** 与 **Repository**（选择 **Push**）
-- Secret：可选
+- Secret：**建议填写**，并把同样的值配到环境变量 `BITBUCKET_WEBHOOK_SECRET`
 
 > 个人仓库（personal project）需要在**仓库级别**配 webhook，项目级 webhook 不会覆盖个人仓库。
 
@@ -385,6 +385,8 @@ BITBUCKET_URL=https://bitbucket.example.com
 # HTTP access token（个人 token 与项目/仓库级 token 通用，无需区分）
 # 只用 Bearer 认证，不需要用户名
 BITBUCKET_ACCESS_TOKEN=your_bitbucket_access_token_here
+# Webhook Secret（与 Bitbucket webhook 设置里的 Secret 保持一致），强烈建议配置
+BITBUCKET_WEBHOOK_SECRET=your_bitbucket_webhook_secret
 # 自建实例使用自签证书时，保持 0 关闭证书校验
 BITBUCKET_VERIFY_SSL=0
 ```
@@ -395,6 +397,7 @@ BITBUCKET_VERIFY_SSL=0
 - **触发时机**：仅在 `pr:opened`（PR 创建）和 `pr:from_ref_updated`（源分支更新）时进行 PR 审查；`pr:merged`、`pr:comment:added` 等事件自动忽略。
 - **实例地址推导**：未配置 `BITBUCKET_URL` 时，系统会尝试从 webhook payload 中的仓库链接自动推导（含 context path）。个人仓库的链接挂在 `/users/<username>/` 下，系统同样支持。
 - **凭证来源**：只使用环境变量 `BITBUCKET_ACCESS_TOKEN`，以 `Authorization` Header 发送（Bearer 认证）。Webhook 上配置的 HTTP Basic 认证头**不会**被解析成凭证。
+- **签名校验**：配置 `BITBUCKET_WEBHOOK_SECRET` 后，系统会用 `X-Hub-Signature` 头的 HMAC-SHA256 校验**原始请求体**；校验不通过返回 **403**。校验必须用未经解析的原始字节，格式化过的 JSON 对不上。未配置该变量则跳过校验（仅告警）。
 - **受保护分支**：通过 Bitbucket 的分支限制（branch restrictions）接口判断，需要账号具备仓库管理员权限。
 - **个人仓库**：project key 形如 `~用户名`（如 `~LIYAHONG`），大小写不敏感，系统会自动处理。
 - **Bitbucket Cloud 不适用**：Bitbucket Cloud（bitbucket.org）使用 REST API 2.0 与不同的 payload 结构，当前版本不支持。

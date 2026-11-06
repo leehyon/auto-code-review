@@ -5,6 +5,8 @@ Bitbucket Server / Data Center webhook 处理逻辑的单元测试。
 或直接执行 ``python3 tests/bitbucket_webhook_handler_test.py``
 """
 
+import hashlib
+import hmac
 import os
 import sys
 import unittest
@@ -20,6 +22,7 @@ from src.bitbucket.webhook_handler import (  # noqa: E402
     parse_unified_diff,
     path_to_string,
     rest_diff_to_unified,
+    verify_webhook_signature,
 )
 
 RAW_DIFF = """diff --git a/src/main/java/Demo.java b/src/main/java/Demo.java
@@ -350,6 +353,70 @@ class FakeResponse:
         if self._json_data is None:
             raise ValueError('no json')
         return self._json_data
+
+
+class TestWebhookSignature(unittest.TestCase):
+
+    def test_official_bitbucket_test_vector(self):
+        """Atlassian 官方文档给出的测试向量。"""
+        secret = "It's a Secret to Everybody"
+        payload = b'Hello World!'
+        expected = 'sha256=a4771c39fbe90f317c7824e83ddef3caae9cb3d976c214ace1f2937e133263c9'
+        self.assertTrue(verify_webhook_signature(payload, expected, secret))
+
+    def test_valid_signature(self):
+        secret = 'top-secret'
+        payload = b'{"eventKey": "pr:opened"}'
+        signature = 'sha256=' + hmac.new(secret.encode('utf-8'), payload,
+                                         hashlib.sha256).hexdigest()
+        self.assertTrue(verify_webhook_signature(payload, signature, secret))
+
+    def test_invalid_signature(self):
+        secret = 'top-secret'
+        payload = b'{"eventKey": "pr:opened"}'
+        self.assertFalse(verify_webhook_signature(payload, 'sha256=' + '0' * 64, secret))
+
+    def test_wrong_secret(self):
+        secret = 'top-secret'
+        payload = b'{"eventKey": "pr:opened"}'
+        signature = 'sha256=' + hmac.new('other-secret'.encode('utf-8'), payload,
+                                         hashlib.sha256).hexdigest()
+        self.assertFalse(verify_webhook_signature(payload, signature, secret))
+
+    def test_missing_signature(self):
+        self.assertFalse(verify_webhook_signature(b'{}', '', 'top-secret'))
+
+    def test_missing_secret(self):
+        payload = b'{}'
+        signature = 'sha256=' + hmac.new(b'x', payload, hashlib.sha256).hexdigest()
+        self.assertFalse(verify_webhook_signature(payload, signature, ''))
+
+    def test_empty_body(self):
+        self.assertFalse(verify_webhook_signature(b'', 'sha256=abc', 'top-secret'))
+
+    def test_unsupported_algorithm(self):
+        self.assertFalse(verify_webhook_signature(b'{}', 'md5=abc', 'top-secret'))
+
+    def test_algorithm_prefix_is_case_insensitive(self):
+        secret = 'top-secret'
+        payload = b'{}'
+        digest = hmac.new(secret.encode('utf-8'), payload, hashlib.sha256).hexdigest()
+        self.assertTrue(verify_webhook_signature(payload, 'SHA256=' + digest, secret))
+
+    def test_signature_must_match_raw_bytes(self):
+        """签名是对原始字节算的，格式化过的 JSON 对不上。"""
+        secret = 'top-secret'
+        raw = b'{"eventKey": "pr:opened",  "id": 25}'
+        pretty = b'{\n  "eventKey": "pr:opened",\n  "id": 25\n}'
+        signature = 'sha256=' + hmac.new(secret.encode('utf-8'), raw, hashlib.sha256).hexdigest()
+        self.assertTrue(verify_webhook_signature(raw, signature, secret))
+        self.assertFalse(verify_webhook_signature(pretty, signature, secret))
+
+    def test_sha1_supported(self):
+        secret = 'top-secret'
+        payload = b'{}'
+        signature = 'sha1=' + hmac.new(secret.encode('utf-8'), payload, hashlib.sha1).hexdigest()
+        self.assertTrue(verify_webhook_signature(payload, signature, secret))
 
 
 class TestBitbucketClient(unittest.TestCase):

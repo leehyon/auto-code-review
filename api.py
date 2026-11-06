@@ -16,6 +16,7 @@ from flask import Flask, request, jsonify, send_from_directory
 import os
 
 from src.gitlab.webhook_handler import slugify_url
+from src.bitbucket.webhook_handler import verify_webhook_signature
 from src.queue.worker import handle_merge_request_event, handle_push_event, handle_github_pull_request_event, \
     handle_github_push_event, handle_gitea_push_event, handle_gitea_pull_request_event, \
     handle_bitbucket_push_event, handle_bitbucket_pull_request_event
@@ -270,6 +271,10 @@ def handle_webhook():
     logger.debug(f'Request headers: {dict(request.headers)}')
     logger.debug(f'Content-Type: {request.content_type}')
     
+    # 保存原始请求体：Bitbucket webhook 签名是对原始字节做的 HMAC，
+    # 解析成 JSON 再序列化回去会得到不同的字节，签名就校验不上了
+    raw_body = request.get_data()
+
     # 获取请求的JSON数据
     # 尝试多种方式获取 JSON 数据
     data = None
@@ -305,7 +310,7 @@ def handle_webhook():
     elif github_event:  # GitHub webhook
         return handle_github_webhook(github_event, data)
     elif bitbucket_event and is_bitbucket_event(bitbucket_event):  # Bitbucket Server/Data Center webhook
-        return handle_bitbucket_webhook(bitbucket_event, data)
+        return handle_bitbucket_webhook(bitbucket_event, data, raw_body)
     else:  # GitLab webhook（默认）
         return handle_gitlab_webhook(data)
 
@@ -526,8 +531,26 @@ def get_bitbucket_credentials():
     return os.getenv('BITBUCKET_ACCESS_TOKEN')
 
 
-def handle_bitbucket_webhook(event_type, data):
+def handle_bitbucket_webhook(event_type, data, raw_body: bytes = b''):
     logger.info(f'Processing Bitbucket webhook, event_type: {event_type}')
+    # X-Request-Id 是 Bitbucket 生成的请求 ID，日志里带上方便对排查
+    request_id = request.headers.get('X-Request-Id', '')
+    if request_id:
+        logger.info(f'Bitbucket webhook request id: {request_id}')
+
+    # 校验 webhook 签名：配置了 BITBUCKET_WEBHOOK_SECRET 才校验。
+    # Bitbucket 在 webhook 设置了 Secret 后会带上 X-Hub-Signature 头，
+    # 不校验的话，任何知道 webhook 地址的人都能伪造 payload 触发审查并让机器人写评论。
+    webhook_secret = os.getenv('BITBUCKET_WEBHOOK_SECRET')
+    if webhook_secret:
+        signature = request.headers.get('X-Hub-Signature', '')
+        if not verify_webhook_signature(raw_body, signature, webhook_secret):
+            error_msg = 'Invalid Bitbucket webhook signature.'
+            logger.error(f'{error_msg} event_type={event_type}')
+            return jsonify({'message': error_msg}), 403
+    else:
+        logger.warn('BITBUCKET_WEBHOOK_SECRET is not configured, skipping Bitbucket webhook '
+                    'signature verification. Configure it in the Bitbucket webhook settings.')
 
     # 获取 Bitbucket 配置
     bitbucket_token = get_bitbucket_credentials()

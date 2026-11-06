@@ -12,6 +12,8 @@ Bitbucket Server / Data Center webhook 处理模块。
 """
 
 import fnmatch
+import hashlib
+import hmac
 import os
 import re
 import time
@@ -31,11 +33,63 @@ MAX_PUSH_COMMITS = 20
 MAX_PUSH_FILES = 100
 # 需要触发代码审查的 PR 事件
 PR_REVIEW_EVENTS = ('pr:opened', 'pr:from_ref_updated')
+# Bitbucket webhook 签名支持的哈希算法（WebSub 规范，Bitbucket 目前用 sha256）
+WEBHOOK_SIGNATURE_ALGORITHMS = {
+    'sha1': hashlib.sha1,
+    'sha256': hashlib.sha256,
+    'sha512': hashlib.sha512,
+}
 
 
 def get_api_path() -> str:
     """获取 Bitbucket REST API 前缀。"""
     return os.getenv('BITBUCKET_API_PATH', DEFAULT_API_PATH).rstrip('/')
+
+
+def verify_webhook_signature(raw_body: bytes, signature: str, secret: str) -> bool:
+    """
+    校验 Bitbucket webhook 的 HMAC 签名。
+
+    Bitbucket Data Center 在 webhook 配置了 Secret 之后，会在每次推送时带上
+    ``X-Hub-Signature: sha256=<hex>``，其中 hex 是用 Secret 对**原始请求体**
+    做 HMAC-SHA256 的结果。校验必须使用未经任何格式化/重新序列化的原始字节，
+    否则签名对不上。
+
+    参考：https://confluence.atlassian.com/bitbucketserver/manage-webhooks-1272382316.html
+
+    :param raw_body: 原始请求体字节（不能是重新序列化过的 JSON）
+    :param signature: X-Hub-Signature header 的值，形如 ``sha256=<hex>``
+    :param secret: webhook secret
+    :return: 签名有效返回 True
+    """
+    if not secret:
+        logger.error('Bitbucket webhook secret is empty, cannot verify the signature.')
+        return False
+    if not raw_body:
+        logger.error('Bitbucket webhook request body is empty, cannot verify the signature.')
+        return False
+    if not signature:
+        logger.error('X-Hub-Signature header is missing from the Bitbucket webhook request.')
+        return False
+
+    method, _, digest = signature.partition('=')
+    method = method.strip().lower()
+    digest = digest.strip()
+    if method not in WEBHOOK_SIGNATURE_ALGORITHMS or not digest:
+        logger.error(f'Unsupported Bitbucket webhook signature format: {signature!r}. '
+                     f'Expected something like "sha256=<hex>".')
+        return False
+
+    expected = hmac.new(secret.encode('utf-8'), raw_body,
+                        WEBHOOK_SIGNATURE_ALGORITHMS[method]).hexdigest()
+    if not hmac.compare_digest(expected, digest):
+        # 打印前缀便于排查；HMAC 摘要本身不泄露 secret
+        logger.error(f'Bitbucket webhook signature mismatch: method={method}, '
+                     f'expected={expected[:12]}..., received={digest[:12]}... '
+                     f'(body={len(raw_body)} bytes). Check that BITBUCKET_WEBHOOK_SECRET '
+                     f'matches the secret configured in the Bitbucket webhook.')
+        return False
+    return True
 
 
 def filter_changes(changes: list) -> list:

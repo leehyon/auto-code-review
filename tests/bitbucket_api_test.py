@@ -9,6 +9,9 @@ Bitbucket webhook 路由（api.py）的集成测试。
 运行方式：``python3 -m unittest discover -s tests -p "bitbucket_api_test.py" -v``
 """
 
+import hashlib
+import hmac
+import json
 import os
 import sys
 import unittest
@@ -134,6 +137,58 @@ class TestBitbucketApiRouting(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('access token', response.get_json()['message'])
         handle_queue.assert_not_called()
+
+    def _post_signed(self, payload, secret, signature=None):
+        """按原始字节发送 payload，并附带 X-Hub-Signature。"""
+        body = json.dumps(payload)
+        if signature is None:
+            signature = 'sha256=' + hmac.new(secret.encode('utf-8'), body.encode('utf-8'),
+                                            hashlib.sha256).hexdigest()
+        headers = {'X-Event-Key': 'pr:opened', 'X-Hub-Signature': signature}
+        with mock.patch.object(self.api, 'handle_queue') as handle_queue:
+            response = self.client.post('/review/webhook', data=body,
+                                        content_type='application/json', headers=headers)
+        return response, handle_queue
+
+    def test_valid_webhook_signature_accepted(self):
+        os.environ['BITBUCKET_WEBHOOK_SECRET'] = 'top-secret'
+        self.addCleanup(os.environ.pop, 'BITBUCKET_WEBHOOK_SECRET', None)
+        response, handle_queue = self._post_signed(PR_PAYLOAD, 'top-secret')
+        self.assertEqual(response.status_code, 200)
+        handle_queue.assert_called_once()
+
+    def test_invalid_webhook_signature_rejected(self):
+        os.environ['BITBUCKET_WEBHOOK_SECRET'] = 'top-secret'
+        self.addCleanup(os.environ.pop, 'BITBUCKET_WEBHOOK_SECRET', None)
+        response, handle_queue = self._post_signed(PR_PAYLOAD, 'top-secret',
+                                                   signature='sha256=' + '0' * 64)
+        self.assertEqual(response.status_code, 403)
+        handle_queue.assert_not_called()
+
+    def test_missing_webhook_signature_rejected(self):
+        os.environ['BITBUCKET_WEBHOOK_SECRET'] = 'top-secret'
+        self.addCleanup(os.environ.pop, 'BITBUCKET_WEBHOOK_SECRET', None)
+        body = json.dumps(PR_PAYLOAD)
+        with mock.patch.object(self.api, 'handle_queue') as handle_queue:
+            response = self.client.post('/review/webhook', data=body,
+                                        content_type='application/json',
+                                        headers={'X-Event-Key': 'pr:opened'})
+        self.assertEqual(response.status_code, 403)
+        handle_queue.assert_not_called()
+
+    def test_signature_of_wrong_secret_rejected(self):
+        os.environ['BITBUCKET_WEBHOOK_SECRET'] = 'top-secret'
+        self.addCleanup(os.environ.pop, 'BITBUCKET_WEBHOOK_SECRET', None)
+        response, handle_queue = self._post_signed(PR_PAYLOAD, 'another-secret')
+        self.assertEqual(response.status_code, 403)
+        handle_queue.assert_not_called()
+
+    def test_no_secret_configured_accepts_request(self):
+        """没配置 secret 时不做签名校验（保持未配置 webhook secret 的实例可用）。"""
+        os.environ.pop('BITBUCKET_WEBHOOK_SECRET', None)
+        response, handle_queue = self._post(PR_PAYLOAD, {'X-Event-Key': 'pr:opened'})
+        self.assertEqual(response.status_code, 200)
+        handle_queue.assert_called_once()
 
     def test_github_event_not_routed_to_bitbucket(self):
         os.environ['GITHUB_ACCESS_TOKEN'] = 'github-token'

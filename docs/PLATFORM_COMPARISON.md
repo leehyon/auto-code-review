@@ -502,6 +502,22 @@ Bitbucket Data Center 同时提供**个人 token** 与**项目/仓库级 token**
   相比 Bearer 并不更安全；而且部分 Atlassian 部署的机器人防护会针对 Basic 触发 CAPTCHA，
   令自动化调用中断。个人 token 与项目/仓库级 token 用同一份配置即可。
 
+#### Webhook 签名校验（X-Hub-Signature）
+
+Bitbucket Data Center 在 webhook 设置了 **Secret** 之后，每次推送都会带上：
+
+```
+X-Hub-Signature: sha256=<hex>
+```
+
+`<hex>` 是用 Secret 对**原始请求体**做的 HMAC-SHA256。系统用 `BITBUCKET_WEBHOOK_SECRET`
+校验这个签名，**不匹配返回 403**。
+
+- 必须用未经解析的原始请求体字节来算，JSON 解析后重新序列化会得到不同的字节，签名对不上。
+- 未配置 `BITBUCKET_WEBHOOK_SECRET` 时跳过校验（仅告警）。不配 Secret 的话，
+  任何知道 webhook 地址的人都能伪造 payload 触发审查，并让机器人用你的 token 去任意仓库写评论。
+- 同时还会带上 `X-Request-Id`，可用于在日志里追踪同一次推送。
+
 #### 问题：Bitbucket 提示缺少 URL
 **解决方案**：
 1. 配置环境变量 `BITBUCKET_URL`（推荐，保留 context path）
