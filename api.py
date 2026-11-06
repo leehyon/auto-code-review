@@ -486,8 +486,9 @@ def extract_bitbucket_url(data: dict) -> str:
     """
     从 webhook payload 中推导 Bitbucket 实例地址。
 
-    DC 的 payload 中的链接形如 ``http://host:7990/bitbucket/projects/KEY/repos/slug/browse``，
-    截断 ``/projects/`` 之后的部分即可得到实例地址（保留 context path）。
+    普通项目的链接形如 ``http://host:7990/bitbucket/projects/KEY/repos/slug/browse``，
+    个人项目（personal project）的链接形如 ``http://host:7990/users/username/repos/slug/browse``，
+    截断对应前缀之后的部分即可得到实例地址（保留 context path）。
     """
     candidates = []
 
@@ -505,13 +506,14 @@ def extract_bitbucket_url(data: dict) -> str:
     if to_self_links and isinstance(to_self_links[0], dict):
         candidates.append(to_self_links[0].get('href', ''))
 
-    for href in candidates:
-        if not href:
-            continue
-        marker = '/projects/'
-        index = href.find(marker)
-        if index > 0:
-            return href[:index].rstrip('/')
+    # 个人项目的仓库链接挂在 /users/<username>/ 下，普通项目挂在 /projects/<key>/ 下
+    for marker in ('/projects/', '/users/'):
+        for href in candidates:
+            if not href:
+                continue
+            index = href.find(marker)
+            if index > 0:
+                return href[:index].rstrip('/')
     return ''
 
 

@@ -214,6 +214,31 @@ class TestExtractBitbucketUrl(unittest.TestCase):
         self.assertEqual(api.extract_bitbucket_url({'repository': {}}), '')
         self.assertEqual(api.extract_bitbucket_url({}), '')
 
+    def test_extract_from_personal_project_links(self):
+        """个人项目（personal project）的仓库链接挂在 /users/<username>/ 下。"""
+        import api
+        payload = {
+            'pullRequest': {
+                'toRef': {
+                    'repository': {
+                        'links': {'self': [
+                            {'href': 'https://bb.example.com/users/liyahong/repos/emirror-eol/browse'}]},
+                    },
+                },
+            },
+        }
+        self.assertEqual(api.extract_bitbucket_url(payload), 'https://bb.example.com')
+
+    def test_extract_from_personal_project_repository_links(self):
+        import api
+        payload = {
+            'repository': {
+                'links': {'self': [
+                    {'href': 'https://bb.example.com/users/liyahong/repos/emirror-eol/browse'}]},
+            },
+        }
+        self.assertEqual(api.extract_bitbucket_url(payload), 'https://bb.example.com')
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
