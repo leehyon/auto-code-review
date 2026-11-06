@@ -98,6 +98,9 @@ def filter_changes(changes: list) -> list:
 
     与 GitLab/Gitea 的 filter_changes 保持一致的输出结构：
     ``{'diff', 'new_path', 'additions', 'deletions'}``
+
+    ``type`` 和 ``old_path`` 是可选附加字段：有 type 才能把删除/重命名/二进制
+    渲染成正确的 diff 段，否则它们会被当成普通修改，模型看到的东西和真实语义对不上。
     """
     supported_extensions = os.getenv('SUPPORTED_EXTENSIONS', '.java,.py,.php').split(',')
 
@@ -118,14 +121,20 @@ def filter_changes(changes: list) -> list:
         # API 未返回增删行数时，从 diff 中统计
         if not additions and not deletions and diff_content:
             additions = len(re.findall(r'^\+(?!\+\+)', diff_content, re.MULTILINE))
-            deletions = len(re.findall(r'^-(?!--)', diff_content, re.MULTILINE))
+            deletions = len(re.findall(r'^-(?!-)', diff_content, re.MULTILINE))
 
-        filtered_changes.append({
+        entry = {
             'diff': diff_content,
             'new_path': new_path,
             'additions': additions,
             'deletions': deletions,
-        })
+        }
+        if item.get('type'):
+            entry['type'] = item['type']
+        old_path = item.get('old_path')
+        if old_path and old_path != new_path:
+            entry['old_path'] = old_path
+        filtered_changes.append(entry)
 
     logger.debug(f"filter_changes: filtered {len(filtered_changes)} files from {len(changes)} changes")
     return filtered_changes
@@ -154,6 +163,48 @@ def _strip_diff_prefix(path: str) -> str:
     return path
 
 
+def _strip_repo_prefix(path: str) -> str:
+    """
+    去掉仓库相对路径上的 diff 协议前缀。
+
+    git 的 ``rename from`` / ``rename to`` 行给的是仓库相对路径（不带 a/ b/ 前缀），
+    用 _strip_diff_prefix 会把目录名恰好以 a/ 或 b/ 开头的路径剥错，
+    所以这里只处理 src:// / dst:// 和引号。
+    """
+    if not path:
+        return ''
+    path = path.strip()
+    if path.startswith('"') and path.endswith('"'):
+        path = path[1:-1]
+    if path == '/dev/null':
+        return ''
+    for prefix in ('src://', 'dst://'):
+        if path.startswith(prefix):
+            return path[len(prefix):]
+    return path
+
+
+def _split_diff_git_header(line: str) -> tuple:
+    """
+    从 ``diff --git <old> <new>`` 头里取出旧路径和新路径。
+
+    Bitbucket DC 的头是 ``diff --git src://X dst://X``，两段带不同前缀。
+    按第一个空格切会把带空格的目录名切错，所以先按 dst:// 前缀定位；
+    纯 git 形式（``a/... b/...``）再走通用分支。
+    """
+    rest = line[len('diff --git '):]
+    idx = rest.find(' dst://')
+    if idx != -1 and rest.startswith('src://'):
+        return _strip_diff_prefix(rest[:idx]), _strip_diff_prefix(rest[idx + 1:])
+    match = re.match(r'^(a/.+?) (b/.+)$', rest)
+    if match:
+        return _strip_diff_prefix(match.group(1)), _strip_diff_prefix(match.group(2))
+    parts = rest.split(' ', 1)
+    if len(parts) == 2:
+        return _strip_diff_prefix(parts[0]), _strip_diff_prefix(parts[1])
+    return '', ''
+
+
 def parse_unified_diff(raw_diff: Optional[str] = None) -> list:
     """
     把 Bitbucket 返回的原始 unified diff 文本切分成按文件组织的变更列表。
@@ -161,6 +212,11 @@ def parse_unified_diff(raw_diff: Optional[str] = None) -> list:
     兼容两种格式：
     - 带 ``diff --git a/xxx b/xxx`` 头的标准 git diff
     - 只有 ``--- a/xxx`` / ``+++ b/xxx`` 头的精简 diff（部分 Bitbucket 版本）
+
+    **不丢弃任何 section**：删除的文件、纯重命名、二进制文件都会保留成显式条目
+    （type 分别为 DELETE / RENAME / BINARY）。丢掉它们的话模型完全不知道本次变更里
+    有过这些文件——删掉一个端口定义和删掉整个 arxml 文件在 diff 正文里长得几乎一样，
+    语义却完全相反。
 
     :param raw_diff: unified diff 文本
     :return: ``[{'old_path', 'new_path', 'diff', 'additions', 'deletions', 'type'}]``
@@ -174,6 +230,8 @@ def parse_unified_diff(raw_diff: Optional[str] = None) -> list:
         if line.startswith('diff --git '):
             current = []
             sections.append(current)
+            # 头本身要留在 section 里：二进制文件和纯重命名的路径只能从它取
+            current.append(line)
             continue
         # 没有 diff --git 头时，用 --- 行作为新文件的开始
         if line.startswith('--- ') and (current is None or not current):
@@ -184,42 +242,78 @@ def parse_unified_diff(raw_diff: Optional[str] = None) -> list:
 
     changes = []
     for section in sections:
+        header_old = header_new = ''
         old_path = ''
         new_path = ''
+        rename_from = ''
+        rename_to = ''
+        new_file_mode = False
+        deleted_file_mode = False
         body_started = False
         body_lines = []
 
         for line in section:
-            if not body_started:
-                if line.startswith('--- '):
-                    old_path = _strip_diff_prefix(line[4:])
-                    continue
-                if line.startswith('+++ '):
-                    new_path = _strip_diff_prefix(line[4:])
-                    continue
-                if line.startswith('@@'):
-                    body_started = True
-                    body_lines.append(line)
-                    continue
-                # 忽略 index / new file mode / deleted file mode / rename 等头部信息
+            if body_started:
+                body_lines.append(line)
                 continue
-            body_lines.append(line)
-
-        # 被删除的文件不参与审查（+++ /dev/null）
-        if not new_path:
-            continue
+            if line.startswith('diff --git '):
+                header_old, header_new = _split_diff_git_header(line)
+            elif line.startswith('rename from '):
+                rename_from = _strip_repo_prefix(line[len('rename from '):])
+            elif line.startswith('rename to '):
+                rename_to = _strip_repo_prefix(line[len('rename to '):])
+            elif line.startswith('new file mode'):
+                new_file_mode = True
+            elif line.startswith('deleted file mode'):
+                deleted_file_mode = True
+            elif line.startswith('--- '):
+                old_path = _strip_diff_prefix(line[4:])
+            elif line.startswith('+++ '):
+                new_path = _strip_diff_prefix(line[4:])
+            elif line.startswith('@@'):
+                body_started = True
+                body_lines.append(line)
+            # index / similarity index / mode 等头部信息忽略
 
         body = '\n'.join(body_lines)
         additions = len(re.findall(r'^\+(?!\+\+)', body, re.MULTILINE))
-        deletions = len(re.findall(r'^-(?!--)', body, re.MULTILINE))
+        deletions = len(re.findall(r'^-(?!-)', body, re.MULTILINE))
+
+        # ---- 判定变更类型 ----
+        if rename_from or rename_to:
+            change_type = 'RENAME'
+            old_path = rename_from or old_path or header_old
+            new_path = rename_to or new_path or header_new or old_path
+            body = f'rename from {old_path}\nrename to {new_path}'
+            additions = deletions = 0
+        elif deleted_file_mode or (old_path and not new_path):
+            # 文件被删除：保留 - 行内容，模型需要知道被删掉了什么
+            change_type = 'DELETE'
+            new_path = old_path
+        elif new_file_mode or (new_path and not old_path):
+            change_type = 'ADD'
+            old_path = new_path
+        elif not old_path and not new_path:
+            # 既没有 --- / +++ 也没有 rename：二进制文件
+            change_type = 'BINARY'
+            old_path = header_old
+            new_path = header_new or header_old
+            body = 'Binary files differ (二进制文件，无法以文本形式审查)'
+            additions = deletions = 0
+        else:
+            change_type = 'MODIFY'
+
+        if not new_path and not old_path:
+            # 连 diff --git 头都解析不出来，无法确定是哪个文件，跳过
+            continue
 
         changes.append({
             'old_path': old_path or new_path,
-            'new_path': new_path,
+            'new_path': new_path or old_path,
             'diff': body,
             'additions': additions,
             'deletions': deletions,
-            'type': 'ADD' if not old_path else 'MODIFY',
+            'type': change_type,
         })
 
     logger.debug(f"parse_unified_diff: parsed {len(changes)} files from raw diff")
@@ -330,6 +424,24 @@ class BitbucketClient:
         response = self.get(path, params=params, accept='text/plain')
         if response.status_code != 200:
             logger.warn(f"Failed to get raw diff from Bitbucket: {response.status_code}, {response.text[:200]}")
+            return None
+        return response.text
+
+    def get_file_content(self, path: str, ref: Optional[str] = None) -> Optional[str]:
+        """
+        按完整 REST 路径取仓库文件原文（/raw 端点）。
+
+        用于读取仓库级指令文件（如 AGENTS.md）。文件不存在返回 None，
+        接口异常也返回 None——调用方据此决定跳过，不能因为取不到就中断整个审查。
+        """
+        params = {'at': ref} if ref else {}
+        response = self.get(path, params=params, accept='text/plain')
+        if response.status_code == 404:
+            logger.info(f"Bitbucket file not found: {path}")
+            return None
+        if response.status_code != 200:
+            logger.warning(f"Failed to get file content from Bitbucket: "
+                           f"{response.status_code}, {response.text[:200]}")
             return None
         return response.text
 
@@ -494,6 +606,59 @@ class PullRequestHandler:
         if not commit_id:
             return ''
         return f"{self.client.base_url}/projects/{self.project_key}/repos/{self.repository_slug}/commits/{commit_id}"
+
+    def get_repo_context(self) -> str:
+        """
+        读取仓库级指令文件（如 AGENTS.md），有界地返回文本。
+
+        由 ``BITBUCKET_REPO_CONTEXT_FILES`` 指定（逗号分隔），留空则不读取。
+        读取失败（文件不存在、权限不足、网络问题）都返回空串——拿不到仓库约定
+        不应该让整个审查失败。
+
+        默认从 PR 的**目标分支**读取：约定文件应该是稳定的，源分支的内容由提交者
+        控制，不适合作为审查依据。
+        """
+        files = [f.strip() for f in
+                 os.getenv('BITBUCKET_REPO_CONTEXT_FILES', '').split(',') if f.strip()]
+        if not files:
+            return ''
+        try:
+            max_lines = int(os.getenv('BITBUCKET_REPO_CONTEXT_MAX_LINES', '200'))
+            max_bytes = int(os.getenv('BITBUCKET_REPO_CONTEXT_MAX_BYTES', '20000'))
+        except ValueError:
+            max_lines, max_bytes = 200, 20000
+
+        blocks = []
+        used_bytes = 0
+        for rel in files:
+            if used_bytes >= max_bytes:
+                break
+            try:
+                content = self.client.get_file_content(
+                    f"/projects/{self.project_key}/repos/{self.repository_slug}/raw/{rel}",
+                    ref=self.target_branch or None)
+            except Exception as e:
+                logger.warning(f"Failed to read repo context file {rel}: {e}")
+                continue
+            if not content:
+                continue
+
+            lines = content.splitlines()
+            truncated = len(lines) > max_lines
+            lines = lines[:max_lines]
+            text = '\n'.join(lines)
+            remaining = max_bytes - used_bytes
+            encoded = text.encode('utf-8')
+            if len(encoded) > remaining:
+                text = encoded[:remaining].decode('utf-8', 'ignore')
+                truncated = True
+            used_bytes += len(text.encode('utf-8'))
+
+            note = '（内容过长，已截断）' if truncated else ''
+            blocks.append(f"### {rel}{note}\n{text}")
+            logger.info(f"Loaded repo context file {rel}: {len(lines)} lines")
+
+        return '\n\n'.join(blocks)
 
     def add_pull_request_notes(self, review_result: str):
         """把审查结果以评论形式写回 PR。"""

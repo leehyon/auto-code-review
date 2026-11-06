@@ -562,12 +562,17 @@ def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str
             logger.error('Failed to get commits')
             return
 
+        # 读取仓库级指令文件（有界），拿不到不影响审查
+        repo_context = handler.get_repo_context()
+
         # review 代码
         commits_text = ';'.join(commit.get('title', '') for commit in commits)
-        review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+        reviewer = CodeReviewer()
+        review_result = reviewer.review_and_strip_code(changes, commits_text, changes,
+                                                       repo_context=repo_context)
 
-        # 将review结果提交到Bitbucket的 comments
-        handler.add_pull_request_notes(f'Auto Review Result: \n{review_result}')
+        # 将review结果提交到Bitbucket的 comments（带上审查范围元信息）
+        handler.add_pull_request_notes(reviewer.format_review_comment(review_result))
 
         # dispatch pull_request_reviewed event
         event_manager['merge_request_reviewed'].send(

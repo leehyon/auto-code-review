@@ -147,8 +147,9 @@ class TestParseUnifiedDiff(unittest.TestCase):
     def test_parse_files_and_counts(self):
         changes = parse_unified_diff(RAW_DIFF)
         paths = [c['new_path'] for c in changes]
-        # 被删除的文件（+++ /dev/null）不参与审查
-        self.assertEqual(paths, ['src/main/java/Demo.java', 'README.md'])
+        # 被删除的文件（+++ /dev/null）也要保留，否则模型不知道这次删了东西
+        self.assertEqual(paths,
+                         ['src/main/java/Demo.java', 'README.md', 'src/removed/Old.java'])
 
     def test_additions_deletions(self):
         changes = {c['new_path']: c for c in parse_unified_diff(RAW_DIFF)}
@@ -195,6 +196,7 @@ index 8c10770..b5a6d27 100644
         self.assertEqual(changes[0]['deletions'], 1)
 
     def test_parse_bitbucket_deleted_file(self):
+        """删除的文件要保留成 DELETE 条目，模型必须知道有文件被删了。"""
         raw = """diff --git src://old.txt dst://old.txt
 deleted file mode 100644
 --- src://old.txt
@@ -204,10 +206,16 @@ deleted file mode 100644
 -text
 """
         changes = parse_unified_diff(raw)
-        self.assertEqual(changes, [])
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]['type'], 'DELETE')
+        self.assertEqual(changes[0]['new_path'], 'old.txt')
+        self.assertEqual(changes[0]['deletions'], 2)
+        self.assertEqual(changes[0]['additions'], 0)
+        # 被删掉的内容必须保留
+        self.assertIn('-gone', changes[0]['diff'])
 
-    def test_parse_bitbucket_binary_file_is_skipped(self):
-        """二进制文件没有 --- / +++ 行，应被跳过且不影响后续文件。"""
+    def test_parse_bitbucket_binary_file_is_kept(self):
+        """二进制文件没有 --- / +++ 行，要保留成 BINARY 条目，且不影响后续文件。"""
         raw = """diff --git src://logo.png dst://logo.png
 index 1111111..2222222 100644
 Binary files src://logo.png and dst://logo.png differ
@@ -220,8 +228,14 @@ index 3333333..4444444 100644
 +int b = 2;
 """
         changes = parse_unified_diff(raw)
-        self.assertEqual(len(changes), 1)
-        self.assertEqual(changes[0]['new_path'], 'App.c')
+        self.assertEqual(len(changes), 2)
+        self.assertEqual(changes[0]['type'], 'BINARY')
+        self.assertEqual(changes[0]['new_path'], 'logo.png')
+        self.assertEqual(changes[0]['additions'], 0)
+        self.assertEqual(changes[0]['deletions'], 0)
+        # 后续文件不受影响
+        self.assertEqual(changes[1]['type'], 'MODIFY')
+        self.assertEqual(changes[1]['new_path'], 'App.c')
 
 
 class TestFilterChanges(unittest.TestCase):
@@ -232,10 +246,14 @@ class TestFilterChanges(unittest.TestCase):
     def test_filters_by_extension_and_keeps_shape(self):
         changes = parse_unified_diff(RAW_DIFF)
         filtered = filter_changes(changes)
+        # 删除的文件也在其中：模型需要知道它被删了
         self.assertEqual(sorted(c['new_path'] for c in filtered),
-                         ['README.md', 'src/main/java/Demo.java'])
+                         ['README.md', 'src/main/java/Demo.java', 'src/removed/Old.java'])
         for item in filtered:
-            self.assertEqual(set(item.keys()), {'diff', 'new_path', 'additions', 'deletions'})
+            # 四个必备字段 + 可选的 type / old_path
+            self.assertTrue({'diff', 'new_path', 'additions', 'deletions'}.issubset(item.keys()))
+            self.assertLessEqual(item.keys(),
+                                 {'diff', 'new_path', 'additions', 'deletions', 'type', 'old_path'})
 
     def test_counts_derived_from_diff_when_missing(self):
         filtered = filter_changes([
@@ -519,14 +537,14 @@ class TestPullRequestApiCalls(unittest.TestCase):
         with mock.patch.object(self.handler.client, 'get_text', return_value=RAW_DIFF) as get_text:
             changes = self.handler.get_pull_request_changes()
         get_text.assert_called_once_with('/projects/PROJ/repos/demo/pull-requests/11.diff')
-        self.assertEqual(len(changes), 2)
+        self.assertEqual(len(changes), 3)
 
     @mock.patch('src.bitbucket.webhook_handler.time.sleep', return_value=None)
     def test_get_pull_request_changes_retries_on_failure(self, _sleep):
         with mock.patch.object(self.handler.client, 'get_text', side_effect=[None, None, RAW_DIFF]) as get_text:
             changes = self.handler.get_pull_request_changes()
         self.assertEqual(get_text.call_count, 3)
-        self.assertEqual(len(changes), 2)
+        self.assertEqual(len(changes), 3)
 
     @mock.patch('src.bitbucket.webhook_handler.time.sleep', return_value=None)
     def test_empty_diff_does_not_retry(self, _sleep):
@@ -581,12 +599,12 @@ class TestPushApiCalls(unittest.TestCase):
         self.assertEqual(args[0], '/projects/PROJ/repos/demo/diff')
         self.assertEqual(kwargs['params']['since'], '197a3e0d2f9a2b3ed1c4fe5923d5dd701bee9fdd')
         self.assertEqual(kwargs['params']['until'], 'a00945762949b7b787ecabc388c0e20b1b85f0b4')
-        self.assertEqual(len(changes), 2)
+        self.assertEqual(len(changes), 3)
 
     def test_get_push_changes_falls_back_to_commit_diff(self):
         with mock.patch.object(self.handler.client, 'get_text', side_effect=['', RAW_DIFF]):
             changes = self.handler.get_push_changes()
-        self.assertEqual(len(changes), 2)
+        self.assertEqual(len(changes), 3)
 
     def test_add_push_notes_comments_last_commit(self):
         with mock.patch.object(self.handler.client, 'post',

@@ -422,6 +422,11 @@ BITBUCKET_ACCESS_TOKEN=your_bitbucket_access_token_here
 BITBUCKET_WEBHOOK_SECRET=your_bitbucket_webhook_secret
 # 自建实例使用自签证书时，保持 0 关闭证书校验
 BITBUCKET_VERIFY_SSL=0
+# 仓库级指令文件（可选，逗号分隔）。读到的内容会作为「项目约定」提供给模型，
+# 让审查按你们的规范提意见。默认从 PR 的目标分支读取，有界截断。
+BITBUCKET_REPO_CONTEXT_FILES=AGENTS.md
+BITBUCKET_REPO_CONTEXT_MAX_LINES=200
+BITBUCKET_REPO_CONTEXT_MAX_BYTES=20000
 ```
 
 **Bitbucket 特殊说明**：
@@ -434,6 +439,27 @@ BITBUCKET_VERIFY_SSL=0
 - **受保护分支**：通过 Bitbucket 的分支限制（branch restrictions）接口判断，需要账号具备仓库管理员权限。
 - **个人仓库**：project key 形如 `~用户名`（如 `~LIYAHONG`），大小写不敏感，系统会自动处理。
 - **Bitbucket Cloud 不适用**：Bitbucket Cloud（bitbucket.org）使用 REST API 2.0 与不同的 payload 结构，当前版本不支持。
+
+### 审查覆盖度与仓库约定
+
+审查结果里始终会写清楚**这次到底审了什么**，避免出现「看着像完整审查、其实只看了两个文件」的情况：
+
+```
+## AI Code Review
+**Files Changed**: 6
+**Additions**: +511
+**Deletions**: -4001
+**Reviewed**: 2 of 6 files (budget-limited)
+**Skipped**: Dcm_V.xml, Os_V.xml, ...
+```
+
+同一份信息也会在送给模型之前告知模型，并明确要求它不要对未纳入的文件下结论。
+
+需要注意的几点：
+
+- **被删除的文件会被保留**：删除的文件、重命名的文件、二进制文件都会作为显式条目进入审查，模型能知道「这次删了某个文件」，而不仅仅是看到一堆 `-` 行。删除整个文件和删除文件里的一个定义，语义完全不同。
+- **超出 token 预算时不会整份丢弃后面的文件**：当前实现按顺序截断，因此 `Reviewed` 少于 `Files Changed` 时，`Skipped` 会列出没被审到的文件。这种情况下审查结论只对 `Reviewed` 覆盖的文件成立。
+- **仓库级约定**：配置 `BITBUCKET_REPO_CONTEXT_FILES` 后，系统会从 PR 的**目标分支**读取这些文件（有行数和字节数上限），作为「项目约定」提供给模型。文件不存在或读取失败会跳过，不影响审查本身。
 
 ### 配置消息推送
 

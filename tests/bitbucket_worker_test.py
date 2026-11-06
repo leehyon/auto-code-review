@@ -119,7 +119,7 @@ class TestBitbucketWorker(unittest.TestCase):
         payload = payload or PR_PAYLOAD
         sent = []
 
-        def fake_review(changes, commits_text, changes_data):
+        def fake_review(changes, commits_text, changes_data, repo_context=''):
             return 'REVIEW RESULT score 88'
 
         with mock.patch.object(worker, 'CodeReviewer') as reviewer, \
