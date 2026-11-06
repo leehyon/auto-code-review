@@ -9,6 +9,8 @@ data/*
 !data/.gitkeep
 
 config/.env
+# .env.dist 是配置模板，需要纳入版本管理
+!config/.env.dist
 .pyc
 __pycache__/
 .cursorignore

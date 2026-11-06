@@ -15,13 +15,14 @@ REQUIRED_ENV_VARS = [
 ]
 
 # 允许的 LLM 供应商
-LLM_PROVIDERS = {"openai", "deepseek", "qwen"}
+LLM_PROVIDERS = {"openai", "deepseek", "qwen", "github_copilot"}
 
 # 每种供应商必须配置的键
 LLM_REQUIRED_KEYS = {
     "openai": ["OPENAI_API_KEY", "OPENAI_API_MODEL"],
     "deepseek": ["DEEPSEEK_API_KEY", "DEEPSEEK_API_MODEL"],
     "qwen": ["QWEN_API_KEY", "QWEN_API_MODEL"],
+    "github_copilot": ["GITHUB_COPILOT_TOKEN"],
 }
 
 

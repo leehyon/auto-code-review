@@ -2,6 +2,7 @@ import os
 
 from src.llm.client.base import BaseClient
 from src.llm.client.deepseek import DeepSeekClient
+from src.llm.client.github_copilot import GitHubCopilotClient
 from src.llm.client.openai import OpenAIClient
 from src.llm.client.qwen import QwenClient
 from src.utils.log import logger
@@ -15,6 +16,7 @@ class Factory:
             'openai': lambda: OpenAIClient(),
             'deepseek': lambda: DeepSeekClient(),
             'qwen': lambda: QwenClient(),
+            'github_copilot': lambda: GitHubCopilotClient(),
         }
 
         provider_func = chat_model_providers.get(provider)

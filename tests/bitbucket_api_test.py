@@ -66,8 +66,12 @@ class TestBitbucketApiRouting(unittest.TestCase):
         self.client = api.api_app.test_client()
         os.environ['BITBUCKET_ACCESS_TOKEN'] = 'test-token'
         os.environ.pop('BITBUCKET_URL', None)
+        # 本地 config/.env 里可能配了 webhook secret，测试必须自己控制，
+        # 否则测试结果会随开发机的 .env 变化而飘
+        os.environ.pop('BITBUCKET_WEBHOOK_SECRET', None)
         self.addCleanup(os.environ.pop, 'BITBUCKET_ACCESS_TOKEN', None)
         self.addCleanup(os.environ.pop, 'BITBUCKET_URL', None)
+        self.addCleanup(os.environ.pop, 'BITBUCKET_WEBHOOK_SECRET', None)
 
     def _post(self, payload, headers):
         with mock.patch.object(self.api, 'handle_queue') as handle_queue:

@@ -152,6 +152,39 @@ DINGTALK_WEBHOOK_URL={YOUR_WDINGTALK_WEBHOOK_URL}
 GITLAB_ACCESS_TOKEN={YOUR_GITLAB_ACCESS_TOKEN}
 ```
 
+#### GitHub Copilot
+
+用 GitHub Copilot 作为大模型供应商：
+
+```bash
+# 大模型供应商配置
+LLM_PROVIDER=github_copilot
+
+# GitHub Copilot 配置
+GITHUB_COPILOT_TOKEN=your_github_token_here
+GITHUB_COPILOT_MODEL=gpt-6-luna
+# API 形态：responses（默认）或 chat_completions
+GITHUB_COPILOT_API_MODE=responses
+# 可选。不配的话会自动向 GitHub 查询该订阅对应的 endpoint
+#GITHUB_COPILOT_API_BASE_URL=https://api.githubcopilot.com
+```
+
+说明：
+
+- **API 形态**：默认走 **Responses API**（`POST {base}/responses`，body 用 `input`）。
+  部分模型（如 `gpt-6-luna`）**只支持 Responses API**，走 chat/completions 会返回
+  `unsupported_api_for_model`。需要切回 chat/completions 时设
+  `GITHUB_COPILOT_API_MODE=chat_completions`。
+- **token**：`GITHUB_COPILOT_TOKEN` 可以是 GitHub token（`ghp_` / `gho_` / `github_pat_` 等开头）。
+  系统会先尝试向 GitHub 换取短期 Copilot token；**实测部分订阅类型（business）换 token 会返回 403**，
+  这时直接用原始 token 当 Bearer 是可行的，程序会自动回退，不需要额外配置。
+- **endpoint**：不同订阅类型域名不同（business 账号是 `api.business.githubcopilot.com`）。
+  不显式配置 `GITHUB_COPILOT_API_BASE_URL` 时，会通过
+  `GET https://api.github.com/copilot_internal/user` 自动查到，查不到则用默认地址。
+- 请求会带上 `Editor-Version`、`Copilot-Integration-Id`、`User-Agent`、`OpenAI-Intent` 四个头。
+- 排查用：`python3 check_copilot_token.py` —— 会打印订阅类型、真实 endpoint、可用模型列表，
+  并发一次真实请求验证。
+
 **2. 启动服务**
 
 ```bash
