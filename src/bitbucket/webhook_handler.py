@@ -216,7 +216,16 @@ def path_to_string(path_obj: dict) -> str:
 
 
 class BitbucketClient:
-    """Bitbucket Server / Data Center REST 客户端。"""
+    """Bitbucket Server / Data Center REST 客户端。
+
+    认证同时兼容两种 HTTP access token：
+    - 个人 token（Manage account -> HTTP access tokens）：Basic（用户名+token）或 Bearer 均可
+    - 项目/仓库级 token（Project/Repository settings -> HTTP access tokens）：
+      官方要求使用 Bearer（不带用户名），Basic 时用户名必须是 ``x-token-auth``
+
+    因此默认优先使用 Bearer（两种 token 都支持），只有显式配置了用户名时才用 Basic，
+    并在 Basic 被拒（401）时自动回退到 Bearer。
+    """
 
     def __init__(self, base_url: str, token: str, username: Optional[str] = None):
         self.base_url = (base_url or '').rstrip('/')
@@ -226,21 +235,24 @@ class BitbucketClient:
         # 自建实例通常使用自签证书，默认关闭校验，可用 BITBUCKET_VERIFY_SSL=1 开启
         self.verify = os.getenv('BITBUCKET_VERIFY_SSL', '0') == '1'
 
-    @property
-    def headers(self) -> dict:
+    def _auth_headers(self, use_basic: bool = True, accept: str = 'application/json') -> dict:
         headers = {
-            'Accept': 'application/json',
+            'Accept': accept,
             'Content-Type': 'application/json',
         }
         if not self.token:
             return headers
-        if self.username:
+        if use_basic and self.username:
             # Personal Access Token 配合用户名使用 HTTP Basic 认证
             credentials = base64.b64encode(f"{self.username}:{self.token}".encode()).decode()
             headers['Authorization'] = f'Basic {credentials}'
         else:
             headers['Authorization'] = f'Bearer {self.token}'
         return headers
+
+    @property
+    def headers(self) -> dict:
+        return self._auth_headers()
 
     def api_url(self, path: str) -> str:
         """拼接 REST API 1.0 的完整地址。"""
@@ -254,10 +266,14 @@ class BitbucketClient:
             accept: str = 'application/json') -> requests.Response:
         url = self.plugin_url(plugin, path) if plugin else self.api_url(path)
         logger.debug(f"Bitbucket GET {url}, params={params}")
-        headers = dict(self.headers)
-        headers['Accept'] = accept
-        return requests.get(url, headers=headers, params=params or {}, verify=self.verify,
-                            timeout=DEFAULT_TIMEOUT)
+        response = requests.get(url, headers=self._auth_headers(accept=accept),
+                                params=params or {}, verify=self.verify, timeout=DEFAULT_TIMEOUT)
+        if response.status_code == 401 and self.username:
+            # Basic 认证被拒：多见于使用了项目/仓库级 token（官方要求用 Bearer），回退重试
+            logger.warn("Bitbucket rejected the basic authentication, retrying with bearer authentication.")
+            response = requests.get(url, headers=self._auth_headers(use_basic=False, accept=accept),
+                                    params=params or {}, verify=self.verify, timeout=DEFAULT_TIMEOUT)
+        return response
 
     def get_text(self, path: str, params: dict = None) -> Optional[str]:
         """
@@ -288,8 +304,14 @@ class BitbucketClient:
     def post(self, path: str, payload: dict) -> requests.Response:
         url = self.api_url(path)
         logger.debug(f"Bitbucket POST {url}")
-        return requests.post(url, headers=self.headers, json=payload, verify=self.verify,
-                             timeout=DEFAULT_TIMEOUT)
+        response = requests.post(url, headers=self._auth_headers(), json=payload, verify=self.verify,
+                                 timeout=DEFAULT_TIMEOUT)
+        if response.status_code == 401 and self.username:
+            # Basic 认证被拒：多见于使用了项目/仓库级 token（官方要求用 Bearer），回退重试
+            logger.warn("Bitbucket rejected the basic authentication, retrying with bearer authentication.")
+            response = requests.post(url, headers=self._auth_headers(use_basic=False), json=payload,
+                                     verify=self.verify, timeout=DEFAULT_TIMEOUT)
+        return response
 
 
 class PullRequestHandler:

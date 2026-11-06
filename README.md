@@ -302,7 +302,37 @@ GITEA_USE_ISSUE_MODE=1
 
 **1. 创建 Access Token**
 
-在 Bitbucket 中点击头像 → **Manage account** → **HTTP access tokens** → **Create HTTP access token**，勾选 `Repository read` 与 `Repository write` 权限后创建，复制生成的 Token。
+Bitbucket Data Center 提供**两种** HTTP access token，任选其一即可：
+
+| | 个人 HTTP access token | 项目 / 仓库级 HTTP access token |
+|---|---|---|
+| 创建位置 | 头像 → **Manage account** → **HTTP access tokens** | **Project / Repository settings** → **HTTP access tokens** |
+| 绑定对象 | 某个用户账号 | 某个项目或仓库，**不绑定用户** |
+| 创建权限 | 本人 | 需要项目或仓库管理员权限 |
+| License | 无额外要求 | **需要 Data Center license** |
+| 可见范围 | 该用户可访问的所有仓库 | 仅该项目/仓库及其下级仓库 |
+| 可授予项目级权限 | 可以 | 可以（但**仓库级 token 不能**给项目级权限） |
+
+两种 token 在 REST API 上的**认证方式不同**，这是最容易踩的坑：
+
+| Token 类型 | HTTP Basic | Bearer |
+|---|---|---|
+| 个人 token | ✅ 用户名 + token | ✅ 仅 token |
+| 项目 / 仓库级 token | ⚠️ 用户名**必须**是 `x-token-auth` | ✅ 仅 token（官方推荐） |
+
+> 官方原文：*"In Git and API calls, you can use the project and repository level token only with Bearer authentication."*
+
+**结论：Bearer 认证（只传 token、不传用户名）对两种 token 都适用。**
+本系统默认走 Bearer；只有你显式配置了 `BITBUCKET_USERNAME` 时才先用 Basic，
+若 Basic 被拒（401）会自动回退到 Bearer 重试，所以两种 token 混用都不会失败。
+
+**本系统需要的权限：**
+
+| 用途 | 所需权限 |
+|---|---|
+| 读取 PR、diff、commit | Repository **read** |
+| 回写 PR 评论 / Commit 评论 | Repository **write**（对应 *"Perform pull request actions"*） |
+| 开启受保护分支过滤（`MERGE_REVIEW_ONLY_PROTECTED_BRANCHES_ENABLED=1`） | Repository **admin**（分支限制接口要求 REPO_ADMIN，否则返回 401） |
 
 **2. 配置 Webhook**
 
@@ -312,6 +342,8 @@ GITEA_USE_ISSUE_MODE=1
 - Events：勾选 **Pull request** 与 **Repository**（选择 **Push**）
 - Secret：可选
 
+> 个人仓库（personal project）需要在**仓库级别**配 webhook，项目级 webhook 不会覆盖个人仓库。
+
 **3. 环境变量配置**
 
 在 `.env` 文件中配置：
@@ -319,10 +351,11 @@ GITEA_USE_ISSUE_MODE=1
 ```bash
 # Bitbucket 实例地址（自建部署），例如 https://bitbucket.example.com
 BITBUCKET_URL=https://bitbucket.example.com
-# Personal Access Token
+# HTTP access token（个人 token 与项目/仓库级 token 通用，无需区分）
 BITBUCKET_ACCESS_TOKEN=your_bitbucket_access_token_here
-# HTTP Basic 认证所需的用户名（配合 Personal Access Token 使用）
-BITBUCKET_USERNAME=your_bitbucket_username
+# 用户名（可选）：仅在使用个人 token 且希望走 HTTP Basic 认证时才需要
+# 用项目/仓库级 token 时请留空，系统会使用 Bearer 认证
+BITBUCKET_USERNAME=
 # 自建实例使用自签证书时，保持 0 关闭证书校验
 BITBUCKET_VERIFY_SSL=0
 ```
@@ -331,9 +364,10 @@ BITBUCKET_VERIFY_SSL=0
 
 - **事件识别**：Bitbucket 通过 `X-Event-Key` 请求头传递事件类型（`pr:opened`、`pr:from_ref_updated`、`repo:refs_changed` 等），与 GitHub/Gitea 的 Header 不冲突，系统可同时接入多个平台。
 - **触发时机**：仅在 `pr:opened`（PR 创建）和 `pr:from_ref_updated`（源分支更新）时进行 PR 审查；`pr:merged`、`pr:comment:added` 等事件自动忽略。
-- **实例地址推导**：未配置 `BITBUCKET_URL` 时，系统会尝试从 webhook payload 中的仓库链接自动推导（含 context path）。
+- **实例地址推导**：未配置 `BITBUCKET_URL` 时，系统会尝试从 webhook payload 中的仓库链接自动推导（含 context path）。个人仓库的链接挂在 `/users/<username>/` 下，系统同样支持。
 - **凭证来源**：优先使用环境变量；若未配置，则回退使用 Webhook 上配置的 HTTP Basic 认证（`Authorization` Header）。
 - **受保护分支**：通过 Bitbucket 的分支限制（branch restrictions）接口判断，需要账号具备仓库管理员权限。
+- **个人仓库**：project key 形如 `~用户名`（如 `~LIYAHONG`），大小写不敏感，系统会自动处理。
 - **Bitbucket Cloud 不适用**：Bitbucket Cloud（bitbucket.org）使用 REST API 2.0 与不同的 payload 结构，当前版本不支持。
 
 ### 配置消息推送

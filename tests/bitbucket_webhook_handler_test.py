@@ -402,6 +402,41 @@ class TestBitbucketClient(unittest.TestCase):
         headers = get.call_args[1]['headers']
         self.assertEqual(headers['Accept'], 'application/json')
 
+    def test_basic_auth_used_when_username_configured(self):
+        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        self.assertTrue(client.headers['Authorization'].startswith('Basic '))
+
+    def test_get_falls_back_to_bearer_on_401(self):
+        """项目/仓库级 token 必须用 Bearer，Basic 被拒后应自动回退。"""
+        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        responses = [FakeResponse(401, 'unauthorized'), FakeResponse(200, '{}', {})]
+        with mock.patch('src.bitbucket.webhook_handler.requests.get',
+                        side_effect=responses) as get:
+            result = client.get('/x')
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(get.call_count, 2)
+        self.assertTrue(get.call_args_list[0][1]['headers']['Authorization'].startswith('Basic '))
+        self.assertTrue(get.call_args_list[1][1]['headers']['Authorization'].startswith('Bearer '))
+
+    def test_post_falls_back_to_bearer_on_401(self):
+        client = BitbucketClient('http://bb.example.com', 'secret', 'admin')
+        responses = [FakeResponse(401, 'unauthorized'), FakeResponse(201, '{}', {})]
+        with mock.patch('src.bitbucket.webhook_handler.requests.post',
+                        side_effect=responses) as post:
+            result = client.post('/x', {'text': 'hi'})
+        self.assertEqual(result.status_code, 201)
+        self.assertEqual(post.call_count, 2)
+        self.assertTrue(post.call_args_list[1][1]['headers']['Authorization'].startswith('Bearer '))
+
+    def test_no_fallback_without_username(self):
+        client = BitbucketClient('http://bb.example.com', 'secret', None)
+        os.environ.pop('BITBUCKET_USERNAME', None)
+        with mock.patch('src.bitbucket.webhook_handler.requests.get',
+                        return_value=FakeResponse(401, 'unauthorized')) as get:
+            result = client.get('/x')
+        self.assertEqual(result.status_code, 401)
+        self.assertEqual(get.call_count, 1)
+
 
 class TestPullRequestApiCalls(unittest.TestCase):
 
