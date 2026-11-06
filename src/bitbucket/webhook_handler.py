@@ -92,6 +92,21 @@ def verify_webhook_signature(raw_body: bytes, signature: str, secret: str) -> bo
     return True
 
 
+# 默认从仓库根目录自动发现的约定文件（按价值排序，命中即读，受字节预算限制）。
+# 多个项目不需要逐个配置；用 BITBUCKET_REPO_CONTEXT_FILES 可以覆盖成指定文件。
+DEFAULT_REPO_CONTEXT_FILES = [
+    'AGENTS.md',
+    'CLAUDE.md',
+    'CONTRIBUTING.md',
+    '.github/copilot-instructions.md',
+    '.cursorrules',
+    '.clinerules',
+    '.windsurfrules',
+    'GEMINI.md',
+    'README.md',
+]
+
+
 def filter_changes(changes: list) -> list:
     """
     过滤变更数据，只保留支持的文件类型以及必要的字段信息。
@@ -437,7 +452,8 @@ class BitbucketClient:
         params = {'at': ref} if ref else {}
         response = self.get(path, params=params, accept='text/plain')
         if response.status_code == 404:
-            logger.info(f"Bitbucket file not found: {path}")
+            # 自动发现约定文件时会探测一串候选名，404 是常态，用 debug 级别
+            logger.debug(f"Bitbucket file not found: {path}")
             return None
         if response.status_code != 200:
             logger.warning(f"Failed to get file content from Bitbucket: "
@@ -609,19 +625,27 @@ class PullRequestHandler:
 
     def get_repo_context(self) -> str:
         """
-        读取仓库级指令文件（如 AGENTS.md），有界地返回文本。
+        读取仓库级指令文件，有界地返回文本。
 
-        由 ``BITBUCKET_REPO_CONTEXT_FILES`` 指定（逗号分隔），留空则不读取。
-        读取失败（文件不存在、权限不足、网络问题）都返回空串——拿不到仓库约定
-        不应该让整个审查失败。
+        **默认从仓库根目录自动发现**常见约定文件（AGENTS.md、CONTRIBUTING.md 等），
+        所以多个项目不需要逐个配置；配置 ``BITBUCKET_REPO_CONTEXT_FILES`` 则改为
+        只读指定的文件（用于覆盖自动发现的清单）。
 
-        默认从 PR 的**目标分支**读取：约定文件应该是稳定的，源分支的内容由提交者
+        文件从 PR 的**目标分支**读取：约定文件应该是稳定的，源分支的内容由提交者
         控制，不适合作为审查依据。
+
+        读取失败（文件不存在、权限不足、网络问题）都跳过——拿不到仓库约定
+        不应该让整个审查失败。
         """
-        files = [f.strip() for f in
-                 os.getenv('BITBUCKET_REPO_CONTEXT_FILES', '').split(',') if f.strip()]
-        if not files:
-            return ''
+        override = [f.strip() for f in
+                    os.getenv('BITBUCKET_REPO_CONTEXT_FILES', '').split(',') if f.strip()]
+        if override:
+            files = override
+            auto_discovered = False
+        else:
+            files = list(DEFAULT_REPO_CONTEXT_FILES)
+            auto_discovered = True
+
         try:
             max_lines = int(os.getenv('BITBUCKET_REPO_CONTEXT_MAX_LINES', '200'))
             max_bytes = int(os.getenv('BITBUCKET_REPO_CONTEXT_MAX_BYTES', '20000'))
@@ -630,6 +654,7 @@ class PullRequestHandler:
 
         blocks = []
         used_bytes = 0
+        found = []
         for rel in files:
             if used_bytes >= max_bytes:
                 break
@@ -641,7 +666,10 @@ class PullRequestHandler:
                 logger.warning(f"Failed to read repo context file {rel}: {e}")
                 continue
             if not content:
+                if not auto_discovered:
+                    logger.warning(f"Repo context file not found: {rel}")
                 continue
+            found.append(rel)
 
             lines = content.splitlines()
             truncated = len(lines) > max_lines
@@ -656,8 +684,10 @@ class PullRequestHandler:
 
             note = '（内容过长，已截断）' if truncated else ''
             blocks.append(f"### {rel}{note}\n{text}")
-            logger.info(f"Loaded repo context file {rel}: {len(lines)} lines")
 
+        if blocks:
+            logger.info(f"Repo context loaded from {found} "
+                        f"({len(blocks)} file(s), {used_bytes} bytes)")
         return '\n\n'.join(blocks)
 
     def add_pull_request_notes(self, review_result: str):

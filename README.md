@@ -422,9 +422,8 @@ BITBUCKET_ACCESS_TOKEN=your_bitbucket_access_token_here
 BITBUCKET_WEBHOOK_SECRET=your_bitbucket_webhook_secret
 # 自建实例使用自签证书时，保持 0 关闭证书校验
 BITBUCKET_VERIFY_SSL=0
-# 仓库级指令文件（可选，逗号分隔）。读到的内容会作为「项目约定」提供给模型，
-# 让审查按你们的规范提意见。默认从 PR 的目标分支读取，有界截断。
-BITBUCKET_REPO_CONTEXT_FILES=AGENTS.md
+# 仓库级指令文件。默认留空 = 自动从仓库根目录发现常见约定文件，多个项目不用逐个配。
+BITBUCKET_REPO_CONTEXT_FILES=
 BITBUCKET_REPO_CONTEXT_MAX_LINES=200
 BITBUCKET_REPO_CONTEXT_MAX_BYTES=20000
 ```
@@ -459,7 +458,7 @@ BITBUCKET_REPO_CONTEXT_MAX_BYTES=20000
 
 - **被删除的文件会被保留**：删除的文件、重命名的文件、二进制文件都会作为显式条目进入审查，模型能知道「这次删了某个文件」，而不仅仅是看到一堆 `-` 行。删除整个文件和删除文件里的一个定义，语义完全不同。
 - **超出 token 预算时不会整份丢弃后面的文件**：当前实现按顺序截断，因此 `Reviewed` 少于 `Files Changed` 时，`Skipped` 会列出没被审到的文件。这种情况下审查结论只对 `Reviewed` 覆盖的文件成立。
-- **仓库级约定**：配置 `BITBUCKET_REPO_CONTEXT_FILES` 后，系统会从 PR 的**目标分支**读取这些文件（有行数和字节数上限），作为「项目约定」提供给模型。文件不存在或读取失败会跳过，不影响审查本身。
+- **仓库级约定**：系统会**自动从仓库根目录发现**常见约定文件（`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`.github/copilot-instructions.md`、`.cursorrules`、`.clinerules`、`.windsurfrules`、`GEMINI.md`、`README.md`），从 PR 的**目标分支**读取（有行数和字节数上限），作为「项目约定」提供给模型。**多个项目不需要逐个配置**。文件不存在或读取失败会跳过，不影响审查本身。需要指定别的文件时设置 `BITBUCKET_REPO_CONTEXT_FILES`（逗号分隔），该变量会覆盖自动发现的清单。
 
 ### 配置消息推送
 

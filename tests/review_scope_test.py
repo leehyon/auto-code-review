@@ -236,7 +236,7 @@ class ReviewInputCompositionTest(unittest.TestCase):
 
 
 class RepoContextReadTest(unittest.TestCase):
-    """仓库级指令文件：有界读取，读不到不影响审查。"""
+    """仓库级指令文件：默认自动发现，多项目不需要逐个配置。"""
 
     def _handler(self):
         from src.bitbucket.webhook_handler import PullRequestHandler, BitbucketClient
@@ -247,9 +247,63 @@ class RepoContextReadTest(unittest.TestCase):
         handler.client = BitbucketClient('https://example.com', 'token')
         return handler
 
-    def test_disabled_by_default(self):
-        with patch.dict(os.environ, {'BITBUCKET_REPO_CONTEXT_FILES': ''}, clear=False):
+    @staticmethod
+    def _fake_files(existing: dict):
+        """按路径返回内容的假客户端，missing 的文件返回 None。"""
+        def side_effect(path, ref=None):
+            for name, content in existing.items():
+                if path.endswith('/raw/' + name):
+                    return content
+            return None
+        return side_effect
+
+    def test_auto_discovery_finds_convention_files(self):
+        """没配置时也要自动发现根目录的约定文件。"""
+        env = {'BITBUCKET_REPO_CONTEXT_FILES': ''}
+        with patch.dict(os.environ, env, clear=False), \
+                patch('src.bitbucket.webhook_handler.BitbucketClient.get_file_content',
+                      side_effect=self._fake_files({'AGENTS.md': '端口必须用 P_ 前缀'})):
+            ctx = self._handler().get_repo_context()
+        self.assertIn('### AGENTS.md', ctx)
+        self.assertIn('端口必须用 P_ 前缀', ctx)
+
+    def test_auto_discovery_probes_root_candidates(self):
+        """自动发现会探测一组常见约定名，而不是只认 AGENTS.md。"""
+        from src.bitbucket.webhook_handler import DEFAULT_REPO_CONTEXT_FILES
+        self.assertIn('AGENTS.md', DEFAULT_REPO_CONTEXT_FILES)
+        self.assertIn('CONTRIBUTING.md', DEFAULT_REPO_CONTEXT_FILES)
+        self.assertIn('.github/copilot-instructions.md', DEFAULT_REPO_CONTEXT_FILES)
+
+        requested = []
+
+        def side_effect(path, ref=None):
+            requested.append(path)
+            return None
+
+        env = {'BITBUCKET_REPO_CONTEXT_FILES': ''}
+        with patch.dict(os.environ, env, clear=False), \
+                patch('src.bitbucket.webhook_handler.BitbucketClient.get_file_content',
+                      side_effect=side_effect):
             self.assertEqual(self._handler().get_repo_context(), '')
+        self.assertEqual(len(requested), len(DEFAULT_REPO_CONTEXT_FILES))
+        self.assertTrue(all('/raw/' in p for p in requested))
+
+    def test_explicit_config_overrides_auto_discovery(self):
+        """显式配置时只读指定文件，不再探测自动发现清单。"""
+        requested = []
+
+        def side_effect(path, ref=None):
+            requested.append(path)
+            return '自定义约定内容'
+
+        env = {'BITBUCKET_REPO_CONTEXT_FILES': 'docs/rule.md'}
+        with patch.dict(os.environ, env, clear=False), \
+                patch('src.bitbucket.webhook_handler.BitbucketClient.get_file_content',
+                      side_effect=side_effect):
+            ctx = self._handler().get_repo_context()
+        self.assertEqual(len(requested), 1)
+        self.assertIn('docs/rule.md', requested[0])
+        self.assertIn('自定义约定内容', ctx)
 
     def test_reads_and_bounds(self):
         env = {
