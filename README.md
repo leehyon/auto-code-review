@@ -136,7 +136,7 @@ LLM_PROVIDER=deepseek
 DEEPSEEK_API_KEY={YOUR_DEEPSEEK_API_KEY}
 
 #支持review的文件类型(未配置的文件类型不会被审查)
-SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.ts,.jsx,.tsx,.arxml,.xml
+SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.ts,.jsx,.tsx,.arxml
 
 #钉钉消息推送: 0不发送钉钉消息,1发送钉钉消息
 DINGTALK_ENABLED=0
@@ -508,19 +508,17 @@ Dashboard 由 `ui_server.py` 提供，这是一个基于 Flask 的轻量级服�
 分两层，避免每加一种语言就抄一遍输出格式：
 
 ```yaml
-base_review_prompt:      # 审查范围、约束、评分规则、输出格式（全部语言共用，全英文）
-  system_prompt: |-      # 审查方法 + Summary / Issues / Questions / Good Practices
+base_review_prompt:      # 审查方法 + 输出协议（全部语言共用，全英文，约 140 行）
+  system_prompt: |-      # Rules / Severity / Score / Output Format
   user_prompt: |-       # 五个槽位，由程序填充
 
-review_profiles:         # 只写差异化的检查点
+review_profiles:         # 每个领域一段方向提示，不是检查项清单
   general:
   python:
-  frontend_common:       # JS / TS / Vue 通用
-  react:
-  vue:
+  frontend:              # JS / TS / Vue
   java:
   go:
-  automotive_cpp:        # C++，另含 checks_c / checks_autosar
+  automotive:            # C / C++ / ARXML
 ```
 
 `user_prompt` 的五个槽位，程序负责填，模板里只放占位符：
@@ -529,22 +527,26 @@ review_profiles:         # 只写差异化的检查点
 | --- | --- |
 | `{project_context}` | 仓库根目录自动发现的约定文件（AGENTS.md 等） |
 | `{review_scope}` | 本次实际审查了哪些文件、哪些没审 |
-| `{profile_checks}` | 按文件类型分组的检查点 |
+| `{profile_checks}` | 按领域汇总的方向提示 |
 | `{diffs_text}` | 变更内容 |
 | `{commits_text}` | 提交信息 |
 
-**混合语言的提交按文件类型分组给检查点**，不是整份 diff 只用一套：
+**profile 是方向段，不是穷举的检查项清单。** 每段给的是关注方向，由模型自己按语言和领域
+做工程判断；没有证据就不报。这样避免了「每条检查都像在要求被命中」而诱导模型凑问题。
 
 ```
-### AUTOSAR ARXML files (*.arxml)   → naming / port semantics / interface consistency
-### C files (*.c)                   → MISRA C / VLA / volatile / 位域
-### C++ files (*.cpp, *.hpp, ...)  → MISRA C++ / RAII / ABI 兼容性
-### Frontend files (*.js, *.ts, *.vue) → 类型安全 / 异步 / XSS / 可访问性
-### Vue-specific files (*.vue)      → 响应式 / 组件契约 / 生命周期
+automotive:
+  This review may contain C, C++ and AUTOSAR ARXML files.
+  Apply language- and domain-appropriate engineering judgment to each file.
+  Pay particular attention to:
+  - C/C++ correctness, undefined behavior, lifetime, concurrency, ...
+  - AUTOSAR model consistency, including port direction, interfaces, ...
+  - Cross-file consistency between ARXML definitions and C/C++ usage.
 ```
 
-所以一个同时改了 arxml + C + C++ 的 PR，三类文件各拿自己那套检查点，不会互相串味。
-每条检查点只出现一次，模型按文件类型取用对应的组。
+程序按本次变更**实际涉及的语言**决定用哪几段方向 —— 逐文件按扩展名判定，
+所以同时改了 arxml + C + C++ 的 PR 会拿到 automotive 段，改了 Vue 会拿到 frontend 段，
+两者都有就两段都给。同一段不会重复出现。
 
 审查报告的结构固定为：
 
@@ -577,10 +579,10 @@ review_profiles:         # 只写差异化的检查点
 **位置**: `src/<platform>/webhook_handler.py`
 
 通过 `SUPPORTED_EXTENSIONS` 环境变量控制哪些文件类型会被审查（`.arxml` 用于 AUTOSAR
-ARXML 配置，`.xml` 用于通用 XML）：
+ARXML 配置；`.xml` 不在列表里，因此普通 XML 文件不会被审查）：
 
 ```bash
-SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.ts,.jsx,.tsx,.arxml,.xml
+SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.ts,.jsx,.tsx,.arxml
 ```
 
 > 扩展名不在列表里的文件会被**静默跳过**（不报错、不发评论）。新增文件类型时记得
@@ -629,25 +631,26 @@ SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.
 #### 智能语言检测
 
 系统按文件扩展名**逐文件**判定语言：Python / JavaScript / TypeScript / Vue / Java / Go /
-C / C++ / **AUTOSAR ARXML**；扩展名不认识时用通用检查点，不会靠代码内容猜。
-逐文件判定是必须的 —— 整份 diff 只选一套检查点会让 C++ 文件套上 C 的规则、
-ARXML 文件拿不到 AUTOSAR 的命名和端口语义检查。
+C / C++ / **AUTOSAR ARXML**；扩展名不认识时用通用方向，不会靠代码内容猜。
+逐文件判定是必须的 —— 整份 diff 只选一套方向会让 C++ 文件按 C 的角度被审、
+ARXML 文件拿不到 AUTOSAR 模型一致性的关注点。`.xml` 不参与判定，也不被审查。
 
-#### 按文件类型分组的检查点
+#### 按领域汇总方向提示
 
-判定出每个文件的语言后，程序把这次变更涉及的检查点按文件类型分组，
+判定出每个文件的语言后，程序把这次变更涉及的**领域**各取一段方向提示，
 一次性送进模型（不拆分多次调用）：
 
-| 文件类型 | 检查点 |
-| --- | --- |
-| `*.arxml` | 命名规范、端口方向语义、接口一致性、生成文件处理建议 |
-| `*.c` | MISRA C、指针生命周期、中断上下文、UB（VLA、变参）、实时性 |
-| `*.cpp` / `*.hpp` | MISRA C++ / AUTOSAR C++14、RAII、内存生命周期、ABI 兼容性 |
-| `*.js` / `*.ts` / `*.vue` | 类型安全、异步竞态、XSS、状态管理、可访问性 |
-| `*.vue` | 追加响应式 API、组件契约、生命周期清理、`v-for` key |
-| `*.py` / `*.java` / `*.go` | 各语言专属检查点 |
+| 领域 | 覆盖文件 | 关注方向 |
+| --- | --- | --- |
+| `automotive` | `*.c` / `*.cpp` / `*.h` / `*.hpp` / `*.arxml` | C/C++ 正确性、UB、生命周期、并发、错误处理、实时性；AUTOSAR 模型一致性（端口方向、接口、ComSpec、数据类型、Runnable 映射）；ARXML 与 C/C++ 之间的跨文件一致性 |
+| `frontend` | `*.js` / `*.ts` / `*.jsx` / `*.tsx` / `*.vue` | 类型安全、异步与竞态、XSS、生命周期与陈旧状态、可访问性 |
+| `python` | `*.py` | 异常处理与异常链、资源生命周期、跨调用可变状态、并发阻塞与取消 |
+| `java` | `*.java` | 资源生命周期、共享可变状态的线程安全、异常上下文、可空性契约、事务与异步边界 |
+| `go` | `*.go` | 错误包装、goroutine 与 channel 生命周期、context 取消、slice 别名、typed nil |
+| `general` | 其他 | 正确性、内存与资源安全、并发、错误处理与诊断、接口兼容性 |
 
-同一类文件只出现一次检查点，模型按文件类型取用对应的组。
+方向提示是**方向**，不是逐条检查项：模型自己按语言和领域做工程判断，
+证据不足就不报。项目特定的命名规范只在 Project Context 里给了的时候才适用。
 
 #### 详细审查维度
 
@@ -655,8 +658,8 @@ ARXML 文件拿不到 AUTOSAR 的命名和端口语义检查。
 并给出「问题描述 → 修改前后对照 → 评分明细 → 总结」的结构化报告。
 存疑但证据不足的项放进 `Questions / Needs Confirmation`，不计入分数。
 
-**具体的维度和输出格式要求定义在 `config/prompt_templates.yml` 里**（全英文），
-按语言分 profile；新增或修改维度请改 profile，不要改本文档，以免两处不一致。
+**具体的方向和输出格式要求定义在 `config/prompt_templates.yml` 里**（全英文），
+按领域分 profile；新增或修改方向请改 profile，不要改本文档，以免两处不一致。
 
 ### 专项审查提示词
 
