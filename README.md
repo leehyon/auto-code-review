@@ -570,9 +570,42 @@ automotive:
 通过 `REVIEW_STYLE` 环境变量控制审查风格：
 
 - **`professional`**: 专业严谨风格 - 使用标准的工程术语，保持专业严谨
-- **`sarcastic`**: 讽刺性语言风格 - 大胆使用讽刺性语言，但要确保技术指正准确
+- **`concise`**: 简洁风格 - 句子短、直给，省掉非必要说明
 - **`gentle`**: 温和建议风格 - 多用"建议"、"可以考虑"等温和措辞
-- **`humorous`**: 幽默风格 - 在技术点评中加入适当幽默元素和 Emoji
+
+### 评论 @ 提醒配置
+
+**位置**: `src/utils/comment_format.py`
+
+通过 `REVIEW_MENTION_USERS` 指定在 PR / Commit 评论里要 @ 提醒的用户，逗号分隔：
+
+```bash
+REVIEW_MENTION_USERS=junchu1,alice
+```
+
+评论首行的形态：
+
+| 配置 | 首行 |
+| --- | --- |
+| `junchu1,alice` | `Auto Review Result, @junchu1 @alice FYI:` |
+| 留空 | `Auto Review Result:` |
+
+> 留空表示不添加任何 @ 提醒。各平台的 @ 语法都是正文里的 `@用户名`，所以同一份配置
+> 对 Bitbucket / GitHub / GitLab / Gitea 都生效。
+
+评论的完整形态（提醒行 → 文件 scope → 模型报告）：
+
+```text
+Auto Review Result, @junchu1 @alice FYI:
+- Files Changed: 4
+- Additions: +460
+- Deletions: -1935
+- Reviewed: 2 of 4 files (budget-limited)
+- Skipped: DcmConfigurationValues.arxml, RteConfigurationValues.arxml
+## Summary
+- Overall Risk Level: HIGH
+...
+```
 
 ### 文件类型过滤配置
 
@@ -593,27 +626,46 @@ SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.
 **位置**: `src/utils/code_reviewer.py`
 
 `REVIEW_MAX_TOKENS` 控制发送给大模型的 diff 文本长度上限（默认 10000）。
-超出时按顺序截断，**后面的文件会整份丢失** —— 审查结果里的 `Skipped` 会列出没审到的文件。
+超出时按顺序截断，**后面的文件会整份丢失** —— 覆盖度信息里会列出没审到的文件。
+
+#### 文件审查优先级
+
+截断是按顺序切的，所以**文件顺序决定谁被砍掉**。系统按扩展名分三档，源码优先：
+
+| 优先级 | 文件类型 | 扩展名 |
+| --- | --- | --- |
+| 0（最先） | 源码 | `.c` `.h` `.cpp` `.hpp` `.py` `.java` `.go` `.js` `.ts` `.vue` 等 |
+| 1 | 其它 | `.md` `.yml` `.css` `.sql` 等 |
+| 2（最后） | 生成的模型/配置 | `.arxml` `.xml` |
+
+所以同一个 PR 里改了源码又改了生成的 ARXML，预算不够时先砍 ARXML，源码尽量完整进模型。
+
+哪些扩展名算「生成类」可以按项目调整：
+
+```bash
+REVIEW_LOW_PRIORITY_EXTENSIONS=.arxml,.xml
+```
+
+留空表示没有低优先级文件，全部按普通优先级处理。
 
 ### 审查覆盖度与仓库约定
 
-审查结果开头会写清楚**这次到底审了什么**，避免「看着像完整审查、其实只看了两个文件」：
+覆盖度信息会**在送进模型之前**告知模型，并要求它不要对未纳入的文件下结论：
 
 ```text
-## AI Code Review
-**Files Changed**: 6
-**Additions**: +511
-**Deletions**: -4001
-**Reviewed**: 2 of 6 files (budget-limited)
-**Skipped**: Dcm_V.xml, Os_V.xml, ...
+- Files changed in this pull request: 6 (modified 6)
+- Lines changed: +511 / -4001
+- Files actually reviewed: 2 (+123 / -327 lines)
+- Files NOT reviewed because of the token budget: 4
+    - DcmConfigurationValues.arxml (modified, +32/-1146)
 ```
 
-同一份信息在送进模型前也会告知模型，并要求它不要对未纳入的文件下结论。
+模型会据此在 Summary 里声明覆盖度限制，评论里读者也能看到「这次只审了两个文件」。
 
 三个要点：
 
 - **删除/重命名/二进制的文件不会被丢弃**，模型能知道「这次删了某个文件」，而不只是看到一堆 `-` 行。删除整个文件和删除文件里的一个定义，语义完全不同。
-- **`Reviewed` 小于 `Files Changed` 时**，说明有一部分文件因 token 预算没被审到，结论只对 `Reviewed` 覆盖的文件成立。
+- **没审到的文件不会被当成"已确认正确"**，也不会为它们扣分；只对实际审过的文件下结论。
 - **仓库级约定自动发现**：系统会从仓库根目录找 `AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、
   `.github/copilot-instructions.md` 等常见约定文件，从 PR 的**目标分支**有界读取后作为
   「项目约定」提供给模型。**多个项目不需要逐个配置**；要指定别的文件时设置

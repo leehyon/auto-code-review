@@ -167,35 +167,80 @@ class ReviewScopeTest(unittest.TestCase):
         # 关键：必须明确禁止模型对没看到的文件下结论
         self.assertIn('Do not speculate about the files that were not', block)
 
-    def test_comment_header_has_metadata(self):
+    def test_comment_has_no_title(self):
+        """评论开头不再有 `## AI Code Review` 标题，但覆盖度元信息保留。"""
+        sent = "diff --git a/a/one.c b/a/one.c\n@@ -1 +1 @@\n+int a;\n"
+        scope = self.reviewer.build_review_scope(self._changes(), sent)
+        self.reviewer.last_review_scope = scope
+        comment = self.reviewer.format_review_comment('模型报告正文')
+        self.assertNotIn('## AI Code Review', comment)
+        self.assertIn('- Files Changed: 3', comment)
+        self.assertTrue(comment.startswith('Auto Review Result'))
+
+    def test_comment_keeps_file_scope_between_prefix_and_report(self):
+        """文件 scope 要保留，且位置在提醒行之后、模型报告之前。"""
+        sent = "diff --git a/a/one.c b/a/one.c\n@@ -1 +1 @@\n+int a;\n"
+        scope = self.reviewer.build_review_scope(self._changes(), sent)
+        self.reviewer.last_review_scope = scope
+        comment = self.reviewer.format_review_comment('## Summary\n报告正文')
+
+        lines = comment.split('\n')
+        self.assertTrue(lines[0].startswith('Auto Review Result'))
+        self.assertTrue(lines[1].startswith('- Files Changed:'))
+        self.assertIn('## Summary', comment)
+        # scope 在报告之前
+        self.assertLess(comment.index('- Files Changed:'), comment.index('## Summary'))
+
+    def test_scope_header_content(self):
         sent = "diff --git a/a/one.c b/a/one.c\n@@ -1 +1 @@\n+int a;\n"
         scope = self.reviewer.build_review_scope(self._changes(), sent)
         header = self.reviewer._format_scope_comment_header(scope)
-        self.assertIn('**Files Changed**: 3', header)
-        self.assertIn('**Additions**: +2', header)
-        self.assertIn('**Deletions**: -1', header)
-        self.assertIn('**Reviewed**: 1 of 3 files (budget-limited)', header)
-        self.assertIn('**Skipped**:', header)
+        self.assertIn('- Files Changed: 3', header)
+        self.assertIn('- Additions: +2', header)
+        self.assertIn('- Deletions: -1', header)
+        self.assertIn('- Reviewed: 1 of 3 files (budget-limited)', header)
+        self.assertIn('- Skipped:', header)
         self.assertIn('a/three.c', header)
 
-    def test_comment_header_without_exclusion(self):
+    def test_scope_header_has_no_bold(self):
+        """scope 块用 bullet 形态，不用粗体。"""
+        sent = "diff --git a/a/one.c b/a/one.c\n@@ -1 +1 @@\n+int a;\n"
+        scope = self.reviewer.build_review_scope(self._changes(), sent)
+        header = self.reviewer._format_scope_comment_header(scope)
+        self.assertNotIn('**', header)
+        for line in header.split('\n'):
+            self.assertTrue(line.startswith('- '), f'不是 bullet: {line}')
+
+    def test_scope_header_without_exclusion(self):
         scope = self.reviewer.build_review_scope(
             self._changes(),
             "diff --git a/a/one.c b/a/one.c\n@@ -1 +1 @@\n+int a;\n"
             "diff --git a/a/two.c b/a/two.c\n@@ -1 +0 @@\n-int b;\n"
             "diff --git a/a/three.c b/a/three.c\n@@ -1 +1 @@\n+int c;\n")
         header = self.reviewer._format_scope_comment_header(scope)
-        self.assertIn('**Reviewed**: 3 of 3 files', header)
+        self.assertIn('- Reviewed: 3 of 3 files', header)
         self.assertNotIn('budget-limited', header)
+
+    def test_scope_header_has_no_title(self):
+        """`## AI Code Review` 标题已去掉，但 scope 元信息保留。"""
+        sent = "diff --git a/a/one.c b/a/one.c\n@@ -1 +1 @@\n+int a;\n"
+        scope = self.reviewer.build_review_scope(self._changes(), sent)
+        header = self.reviewer._format_scope_comment_header(scope)
+        self.assertNotIn('## AI Code Review', header)
+        self.assertIn('- Files Changed', header)
+
+    def test_scope_header_empty_without_scope(self):
+        self.assertEqual(self.reviewer._format_scope_comment_header({}), '')
+        self.assertEqual(self.reviewer._format_scope_comment_header(None), '')
 
     def test_format_review_comment_combines(self):
         scope = self.reviewer.build_review_scope(
             self._changes(), "diff --git a/a/one.c b/a/one.c\n@@ -1 +1 @@\n+int a;\n")
         self.reviewer.last_review_scope = scope
         comment = self.reviewer.format_review_comment('模型报告正文')
-        self.assertIn('## AI Code Review', comment)
         self.assertIn('模型报告正文', comment)
         self.assertIn('Auto Review Result', comment)
+        self.assertTrue(comment.startswith('Auto Review Result'))
 
 
 class ReviewInputCompositionTest(unittest.TestCase):

@@ -36,16 +36,17 @@ def handle_push_event(webhook_data: dict, gitlab_token: str, gitlab_url: str, gi
             if not changes:
                 logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
             review_result = "关注的文件没有修改"
+            reviewer = CodeReviewer()
 
             if len(changes) > 0:
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+                review_result = reviewer.review_and_strip_code(changes, commits_text, changes)
                 score = CodeReviewer.parse_review_score(review_text=review_result)
                 for item in changes:
                     additions += item['additions']
                     deletions += item['deletions']
             # 将review结果提交到Gitlab的 notes
-            handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+            handler.add_push_notes(reviewer.format_review_comment(review_result))
 
         event_manager['push_reviewed'].send(PushReviewEntity(
             project_name=webhook_data['project']['name'],
@@ -120,10 +121,11 @@ def handle_merge_request_event(webhook_data: dict, gitlab_token: str, gitlab_url
 
         # review 代码
         commits_text = ';'.join(commit['title'] for commit in commits)
-        review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+        reviewer = CodeReviewer()
+        review_result = reviewer.review_and_strip_code(changes, commits_text, changes)
 
         # 将review结果提交到Gitlab的 notes
-        handler.add_merge_request_notes(f'Auto Review Result: \n{review_result}')
+        handler.add_merge_request_notes(reviewer.format_review_comment(review_result))
 
         # dispatch merge_request_reviewed event
         event_manager['merge_request_reviewed'].send(
@@ -171,16 +173,17 @@ def handle_github_push_event(webhook_data: dict, github_token: str, github_url: 
             if not changes:
                 logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
             review_result = "关注的文件没有修改"
+            reviewer = CodeReviewer()
 
             if len(changes) > 0:
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+                review_result = reviewer.review_and_strip_code(changes, commits_text, changes)
                 score = CodeReviewer.parse_review_score(review_text=review_result)
                 for item in changes:
                     additions += item.get('additions', 0)
                     deletions += item.get('deletions', 0)
             # 将review结果提交到GitHub的 notes
-            handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+            handler.add_push_notes(reviewer.format_review_comment(review_result))
 
         event_manager['push_reviewed'].send(PushReviewEntity(
             project_name=webhook_data['repository']['name'],
@@ -248,10 +251,11 @@ def handle_github_pull_request_event(webhook_data: dict, github_token: str, gith
 
         # review 代码
         commits_text = ';'.join(commit['title'] for commit in commits)
-        review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+        reviewer = CodeReviewer()
+        review_result = reviewer.review_and_strip_code(changes, commits_text, changes)
 
         # 将review结果提交到GitHub的 notes
-        handler.add_pull_request_notes(f'Auto Review Result: \n{review_result}')
+        handler.add_pull_request_notes(reviewer.format_review_comment(review_result))
 
         # dispatch pull_request_reviewed event
         event_manager['merge_request_reviewed'].send(
@@ -311,10 +315,11 @@ def handle_gitea_push_event(webhook_data: dict, gitea_token: str, gitea_url: str
             if not changes:
                 logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
             review_result = "关注的文件没有修改"
+            reviewer = CodeReviewer()
 
             if len(changes) > 0:
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+                review_result = reviewer.review_and_strip_code(changes, commits_text, changes)
                 score = CodeReviewer.parse_review_score(review_text=review_result)
                 for item in changes:
                     additions += item.get('additions', 0)
@@ -343,17 +348,17 @@ def handle_gitea_push_event(webhook_data: dict, gitea_token: str, gitea_url: str
                     }
                     
                     issue_number = handler.create_or_get_review_issue(review_metadata)
-                    handler.add_issue_comment(issue_number, review_result)
+                    handler.add_issue_comment(issue_number, reviewer.format_review_comment(review_result))
                     logger.info(f"Review result added to issue #{issue_number}")
                 except Exception as e:
                     logger.error(f"Failed to add review to issue: {str(e)}")
                     import traceback
                     logger.debug(traceback.format_exc())
                     # 降级到传统模式
-                    handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+                    handler.add_push_notes(reviewer.format_review_comment(review_result))
             else:
                 # 传统模式：直接在 commit 上添加评论
-                handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+                handler.add_push_notes(reviewer.format_review_comment(review_result))
 
         event_manager['push_reviewed'].send(PushReviewEntity(
             project_name=project_name,
@@ -433,7 +438,8 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
 
         # review 代码
         commits_text = ';'.join(commit.get('title', commit.get('message', '')).split('\n')[0] for commit in commits)
-        review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+        reviewer = CodeReviewer()
+        review_result = reviewer.review_and_strip_code(changes, commits_text, changes)
 
         # 检查是否启用 Issue 模式（默认开启）
         use_issue_mode = os.environ.get('GITEA_USE_ISSUE_MODE', '1') == '1'
@@ -452,17 +458,17 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
                 }
                 
                 issue_number = handler.create_or_get_review_issue(review_metadata)
-                handler.add_issue_comment(issue_number, review_result)
+                handler.add_issue_comment(issue_number, reviewer.format_review_comment(review_result))
                 logger.info(f"Review result added to issue #{issue_number}")
             except Exception as e:
                 logger.error(f"Failed to add review to issue: {str(e)}")
                 import traceback
                 logger.debug(traceback.format_exc())
                 # 降级到 PR 评论模式
-                handler.add_pull_request_notes(f'Auto Review Result: \n{review_result}')
+                handler.add_pull_request_notes(reviewer.format_review_comment(review_result))
         else:
             # 传统模式：直接在 PR 上添加评论
-            handler.add_pull_request_notes(f'Auto Review Result: \n{review_result}')
+            handler.add_pull_request_notes(reviewer.format_review_comment(review_result))
 
         # 提取项目信息
         pull_request = webhook_data.get('pull_request', {})
@@ -629,16 +635,17 @@ def handle_bitbucket_push_event(webhook_data: dict, bitbucket_token: str, bitbuc
             if not changes:
                 logger.info('未检测到PUSH代码的修改,修改文件可能不满足SUPPORTED_EXTENSIONS。')
             review_result = "关注的文件没有修改"
+            reviewer = CodeReviewer()
 
             if len(changes) > 0:
                 commits_text = ';'.join(commit.get('message', '').strip() for commit in commits)
-                review_result = CodeReviewer().review_and_strip_code(changes, commits_text, changes)
+                review_result = reviewer.review_and_strip_code(changes, commits_text, changes)
                 score = CodeReviewer.parse_review_score(review_text=review_result)
                 for item in changes:
                     additions += item.get('additions', 0)
                     deletions += item.get('deletions', 0)
             # 将review结果提交到Bitbucket的 comments
-            handler.add_push_notes(f'Auto Review Result: \n{review_result}')
+            handler.add_push_notes(reviewer.format_review_comment(review_result))
 
         event_manager['push_reviewed'].send(PushReviewEntity(
             project_name=handler.repository_name,

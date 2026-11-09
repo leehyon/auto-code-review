@@ -784,11 +784,11 @@ class PushHandler:
         logger.info(f"Created new issue #{issue_number} for commit {commit_short}")
         return issue_number
 
-    def add_issue_comment(self, issue_number: int, review_result: str):
+    def add_issue_comment(self, issue_number: int, body: str):
         """
         在 Issue 中添加审核评论
         :param issue_number: Issue 编号
-        :param review_result: 审核结果文本
+        :param body: 评论正文（由调用方组装好）
         """
         if not self.repo_full_name:
             logger.error("repo_full_name is empty, cannot add comment")
@@ -811,7 +811,7 @@ class PushHandler:
         }
         
         data = {
-            'body': f"## AI Code Review Result\n\n{review_result}"
+            'body': body
         }
         
         logger.info(f"Attempting to add comment to issue #{issue_number} in {self.repo_full_name}")
@@ -1302,11 +1302,11 @@ class PullRequestHandler:
         logger.info(f"Created new issue #{issue_number} for PR #{self.pull_request_number}")
         return issue_number
 
-    def add_issue_comment(self, issue_number: int, review_result: str):
+    def add_issue_comment(self, issue_number: int, body: str):
         """
         在 Issue 中添加审核评论
         :param issue_number: Issue 编号
-        :param review_result: 审核结果文本
+        :param body: 评论正文（由调用方组装好）
         """
         if not self.repo_full_name:
             logger.error("repo_full_name is empty, cannot add comment")
@@ -1329,7 +1329,7 @@ class PullRequestHandler:
         }
         
         data = {
-            'body': f"## AI Code Review Result\n\n{review_result}"
+            'body': body
         }
         
         logger.info(f"Attempting to add comment to issue #{issue_number} in {self.repo_full_name}")

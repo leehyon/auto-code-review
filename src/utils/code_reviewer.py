@@ -7,6 +7,7 @@ import yaml
 from jinja2 import Template
 
 from src.llm.factory import Factory
+from src.utils.comment_format import build_review_comment
 from src.utils.log import logger
 from src.utils.token_util import count_tokens, truncate_text_by_tokens
 
@@ -52,6 +53,16 @@ class BaseReviewer(abc.ABC):
     def review_code(self, *args, **kwargs) -> str:
         """抽象方法，子类必须实现"""
         pass
+
+
+# 源码扩展名：预算不够时优先保留这些文件
+SOURCE_EXTENSIONS = {
+    '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx',
+    '.py', '.java', '.go', '.js', '.jsx', '.ts', '.tsx', '.vue', '.php',
+}
+
+# 生成的模型/配置扩展名：优先级最低，预算不够时先砍这些
+DEFAULT_LOW_PRIORITY_EXTENSIONS = '.arxml,.xml'
 
 
 class CodeReviewer(BaseReviewer):
@@ -174,6 +185,36 @@ class CodeReviewer(BaseReviewer):
         else:
             logger.info("未检测到特定编程语言，使用通用审查提示词")
         return 'default'
+
+    @staticmethod
+    def _low_priority_extensions() -> set:
+        """低优先级（生成类）文件的扩展名，可用环境变量覆盖。"""
+        raw = os.getenv('REVIEW_LOW_PRIORITY_EXTENSIONS',
+                        DEFAULT_LOW_PRIORITY_EXTENSIONS)
+        return {ext.strip().lower() for ext in raw.split(',') if ext.strip()}
+
+    @classmethod
+    def _file_review_priority(cls, path: str) -> int:
+        """文件审查优先级，数字越小越先进入模型。
+
+        0 = 源码；1 = 其它；2 = 生成的模型/配置（如 .arxml、.xml）。
+        """
+        ext = os.path.splitext(path or '')[1].lower()
+        if ext in SOURCE_EXTENSIONS:
+            return 0
+        if ext in cls._low_priority_extensions():
+            return 2
+        return 1
+
+    @classmethod
+    def _sort_changes_by_priority(cls, changes: list) -> list:
+        """按优先级排序：源码在前，生成的 arxml/xml 在后。
+
+        预算不够被顺序截断时，靠后的文件先被砍掉，源码尽量完整进入模型。
+        稳定排序，同优先级保持原有顺序。
+        """
+        return sorted(changes, key=lambda c: cls._file_review_priority(
+            c.get('new_path') or c.get('old_path') or ''))
 
     def _detect_file_languages(self, diffs_text: str) -> list:
         """
@@ -407,35 +448,36 @@ class CodeReviewer(BaseReviewer):
 
     @staticmethod
     def _format_scope_comment_header(scope: dict) -> str:
-        """Scope header for the reader, placed above the model's report."""
+        """评论里的文件 scope 说明，紧跟在提醒行之后、模型报告之前。
+
+        让读者一眼看出这次到底审了什么、哪些没审到。
+        """
         if not scope or not scope.get('total_files'):
             return ''
         labels = {'ADD': 'added', 'MODIFY': 'modified', 'DELETE': 'deleted',
                   'RENAME': 'renamed', 'BINARY': 'binary'}
-        lines = ['## AI Code Review']
-        lines.append(f"**Files Changed**: {scope['total_files']}")
-        lines.append(f"**Additions**: +{scope['additions']}")
-        lines.append(f"**Deletions**: -{scope['deletions']}")
+        lines = [f"- Files Changed: {scope['total_files']}",
+                 f"- Additions: +{scope['additions']}",
+                 f"- Deletions: -{scope['deletions']}"]
         reviewed = len(scope['included_files'])
         if scope['excluded_files']:
-            lines.append(f"**Reviewed**: {reviewed} of {scope['total_files']} files (budget-limited)")
-            lines.append("**Skipped**: "
+            lines.append(f"- Reviewed: {reviewed} of {scope['total_files']} files (budget-limited)")
+            lines.append("- Skipped: "
                          + ', '.join(entry['path'] for entry in scope['excluded_files']))
         else:
-            lines.append(f"**Reviewed**: {reviewed} of {scope['total_files']} files")
+            lines.append(f"- Reviewed: {reviewed} of {scope['total_files']} files")
         notable = [entry for entry in scope['included_files']
                    if entry['type'] in ('DELETE', 'RENAME', 'BINARY')]
         if notable:
-            lines.append('**Notable Changes**: ' + ', '.join(
+            lines.append('- Notable Changes: ' + ', '.join(
                 f"{entry['path']} ({labels.get(entry['type'], entry['type'])})"
                 for entry in notable))
         return '\n'.join(lines)
 
     def format_review_comment(self, review_result: str) -> str:
-        """组装 PR 评论正文：审查范围元信息 + 模型报告。"""
-        header = self._format_scope_comment_header(self.last_review_scope)
-        body = f'Auto Review Result: \n{review_result}'
-        return f'{header}\n\n{body}' if header else body
+        """组装评论正文：提醒行 + 文件 scope + 模型报告。"""
+        scope_block = self._format_scope_comment_header(self.last_review_scope)
+        return build_review_comment(review_result, scope_block)
 
     def _convert_changes_to_diff_format(self, changes: list) -> str:
         """将changes列表转换为标准的diff格式"""
@@ -489,9 +531,10 @@ class CodeReviewer(BaseReviewer):
         # 保存原始的changes数据用于语言检测
         original_changes_data = changes_data
         
-        # 如果changes_text是列表格式，转换为diff格式
+        # 源码优先，生成的模型/配置靠后——预算不够时先砍靠后的
         if isinstance(changes_text, list):
-            changes_text = self._convert_changes_to_diff_format(changes_text)
+            changes_text = self._convert_changes_to_diff_format(
+                self._sort_changes_by_priority(changes_text))
         elif hasattr(changes_text, '__iter__') and not isinstance(changes_text, str):
             # 处理其他可迭代对象
             changes_text = self._convert_changes_to_diff_format(list(changes_text))
