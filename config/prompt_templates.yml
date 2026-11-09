@@ -96,25 +96,25 @@ base_review_prompt:
       API Usage | Testability | Design
     - Location: <file>:<reliable line or diff context>
 
-    #### Problem
+    #### 🐛 Problem
     Why this is an issue.
 
-    #### Standard Violation
+    #### 🚧 Standard Violation
     Include this subsection only when the project context identifies the exact
     standard and version:
     - Standard: <exact standard and version>
     - Rule ID: <exact Rule ID>
     - Description: <brief rule description>
 
-    #### Evidence
+    #### 🔍 Evidence
     ```<language>
     <smallest relevant snippet from the diff>
     ```
 
-    #### Impact
+    #### ⚡ Impact
     The credible consequence and its trigger condition.
 
-    #### Recommendation
+    #### 💡 Recommendation
     A minimal, targeted fix. Include an improved snippet only when the fix is
     local and no surrounding implementation has to be invented; otherwise
     describe the change.

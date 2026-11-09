@@ -630,7 +630,7 @@ automotive:
 - Overall Risk Level / Total Issues / Blocking Issues / Review Score / Merge Recommendation
 ## Issues
 ### [SEVERITY] Title → Severity / Category / Location
-  → Problem / Standard Violation (Rule ID) / Evidence / Impact / Recommendation
+  → 🐛 Problem / 🚧 Standard Violation (Rule ID) / 🔍 Evidence / ⚡ Impact / 💡 Recommendation
 ## Questions / Needs Confirmation   (Optional，存疑项不计入分数)
 ## Good Practices Observed (Optional)
 ```

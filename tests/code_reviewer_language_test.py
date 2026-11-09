@@ -250,5 +250,33 @@ class ReviewScoreParsingTest(unittest.TestCase):
         self.assertEqual(CodeReviewer.parse_review_score("no issues found"), 0)
 
 
+class ReportSectionEmojiTest(unittest.TestCase):
+    """issue 内部的小节用 emoji 做视觉锚点，顶层标题不加。"""
+
+    def setUp(self):
+        import yaml
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               'config', 'prompt_templates.yml'), encoding='utf-8') as f:
+            self.templates = yaml.safe_load(f)
+        self.system_prompt = self.templates['base_review_prompt']['system_prompt']
+
+    def test_issue_subsections_have_emoji(self):
+        for header in ['#### 🐛 Problem', '#### 🚧 Standard Violation',
+                       '#### 🔍 Evidence', '#### ⚡ Impact', '#### 💡 Recommendation']:
+            self.assertIn(header, self.system_prompt,
+                          f'base prompt 缺少带 emoji 的小节标题: {header}')
+
+    def test_top_level_sections_have_no_emoji(self):
+        """顶层标题已经是 H2，再加 emoji 是噪音。"""
+        for header in ['## Summary', '## Issues']:
+            self.assertIn(header, self.system_prompt)
+        self.assertNotIn('## Summary 🐛', self.system_prompt)
+        self.assertNotIn('## Issues 🐛', self.system_prompt)
+
+    def test_issue_title_has_no_emoji(self):
+        """严重度方括号本身就是锚点，标题行不再叠 emoji。"""
+        self.assertIn('### [<Severity>] <Short Title>', self.system_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
