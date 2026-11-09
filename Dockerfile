@@ -36,6 +36,14 @@ ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
 RUN pip install --no-cache-dir --timeout 300 --retries 3 -i ${PIP_INDEX_URL} -r requirements.txt
 
 RUN mkdir -p logs data config web
+
+# tiktoken 的编码表（BPE 文件）默认在首次使用时从
+# openaipublic.blob.core.windows.net 下载。容器运行时如果解析不了这个域名
+# （很多企业网络/代理就是这样），token 计数会直接抛异常，整个审查中断、PR 上没有评论。
+# 所以在构建阶段就把编码表下载好打进镜像，运行时不再依赖外网。
+ENV TIKTOKEN_CACHE_DIR=/app/.tiktoken_cache
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); tiktoken.get_encoding('o200k_base')"
+
 COPY src ./src
 COPY api.py ./api.py
 COPY ui.py ./ui.py
