@@ -48,6 +48,22 @@ function formatDate(date) {
     return `${year}-${month}-${day}`;
 }
 
+// 显示筛选提示
+function showFilterNotice(message) {
+    let notice = document.getElementById('filterNotice');
+    if (!notice) {
+        notice = document.createElement('div');
+        notice.id = 'filterNotice';
+        notice.className = 'mb-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800';
+        const table = document.getElementById('dataTableBody');
+        if (table && table.parentNode) {
+            table.parentNode.insertBefore(notice, table.parentNode.firstChild);
+        }
+    }
+    notice.textContent = message;
+    notice.classList.remove('hidden');
+}
+
 // 更新最后更新时间
 function updateLastUpdateTime() {
     const now = new Date();
@@ -85,11 +101,24 @@ function switchTab(tab) {
 async function loadData() {
     try {
         // 获取筛选条件
-        const startDate = document.getElementById('startDate').value;
-        const endDate = document.getElementById('endDate').value;
+        let startDate = document.getElementById('startDate').value;
+        let endDate = document.getElementById('endDate').value;
         const authors = Array.from(document.getElementById('authors').selectedOptions).map(opt => opt.value);
         const projectNames = Array.from(document.getElementById('projectNames').selectedOptions).map(opt => opt.value);
         
+        // 开始日期晚于结束日期时，查询必然为空（updated_at >= gte AND updated_at <= lte）。
+        // 这种情况页面只显示「没有数据」，看起来像记录没写进去。
+        // 这里直接交换两个日期，并提示用户。
+        if (startDate && endDate && startDate > endDate) {
+            const swapped = startDate;
+            startDate = endDate;
+            endDate = swapped;
+            document.getElementById('startDate').value = startDate;
+            document.getElementById('endDate').value = endDate;
+            console.warn('开始日期晚于结束日期，已自动交换:', startDate, '~', endDate);
+            showFilterNotice('开始日期晚于结束日期，已自动交换为 ' + startDate + ' ~ ' + endDate);
+        }
+
         // 构建查询参数
         const params = new URLSearchParams();
         params.append('type', currentReviewType);
@@ -260,11 +289,24 @@ function updateFilterOptions(data) {
 async function loadCharts() {
     try {
         // 获取筛选条件
-        const startDate = document.getElementById('startDate').value;
-        const endDate = document.getElementById('endDate').value;
+        let startDate = document.getElementById('startDate').value;
+        let endDate = document.getElementById('endDate').value;
         const author = document.getElementById('authors').value;
         const projectName = document.getElementById('projectNames').value;
         
+        // 开始日期晚于结束日期时，查询必然为空（updated_at >= gte AND updated_at <= lte）。
+        // 这种情况页面只显示「没有数据」，看起来像记录没写进去。
+        // 这里直接交换两个日期，并提示用户。
+        if (startDate && endDate && startDate > endDate) {
+            const swapped = startDate;
+            startDate = endDate;
+            endDate = swapped;
+            document.getElementById('startDate').value = startDate;
+            document.getElementById('endDate').value = endDate;
+            console.warn('开始日期晚于结束日期，已自动交换:', startDate, '~', endDate);
+            showFilterNotice('开始日期晚于结束日期，已自动交换为 ' + startDate + ' ~ ' + endDate);
+        }
+
         // 构建查询参数
         const params = new URLSearchParams();
         params.append('type', currentReviewType);

@@ -2,6 +2,7 @@ import pandas as pd
 
 from src.entity.review_entity import MergeRequestReviewEntity, PushReviewEntity
 from src.service.db_factory import get_db_connection, DatabaseFactory
+from src.utils.log import logger
 
 
 class ReviewService:
@@ -141,22 +142,24 @@ class ReviewService:
                 """
                 params = []
 
+                ph = conn.placeholder
+
                 if authors:
-                    placeholders = ','.join(['%s'] * len(authors))
+                    placeholders = ','.join([ph] * len(authors))
                     query += f" AND author IN ({placeholders})"
                     params.extend(authors)
 
                 if project_names:
-                    placeholders = ','.join(['%s'] * len(project_names))
+                    placeholders = ','.join([ph] * len(project_names))
                     query += f" AND project_name IN ({placeholders})"
                     params.extend(project_names)
 
                 if updated_at_gte is not None:
-                    query += " AND updated_at >= %s"
+                    query += f" AND updated_at >= {ph}"
                     params.append(updated_at_gte)
 
                 if updated_at_lte is not None:
-                    query += " AND updated_at <= %s"
+                    query += f" AND updated_at <= {ph}"
                     params.append(updated_at_lte)
 
                 query += " ORDER BY updated_at DESC"
@@ -164,11 +167,9 @@ class ReviewService:
                 # 使用pandas读取数据
                 pandas_conn = conn.get_connection_for_pandas()
                 df = pd.read_sql_query(sql=query, con=pandas_conn, params=params)
-
-                print(df)
                 return df
         except Exception as e:
-            print(f"Error retrieving review logs: {e}")
+            logger.error(f"Error retrieving review logs: {e}", exc_info=True)
             return pd.DataFrame()
 
     @staticmethod
@@ -202,22 +203,24 @@ class ReviewService:
                 """
                 params = []
 
+                ph = conn.placeholder
+
                 if authors:
-                    placeholders = ','.join(['?'] * len(authors))
+                    placeholders = ','.join([ph] * len(authors))
                     query += f" AND author IN ({placeholders})"
                     params.extend(authors)
 
                 if project_names:
-                    placeholders = ','.join(['?'] * len(project_names))
+                    placeholders = ','.join([ph] * len(project_names))
                     query += f" AND project_name IN ({placeholders})"
                     params.extend(project_names)
 
                 if updated_at_gte is not None:
-                    query += " AND updated_at >= ?"
+                    query += f" AND updated_at >= {ph}"
                     params.append(updated_at_gte)
 
                 if updated_at_lte is not None:
-                    query += " AND updated_at <= ?"
+                    query += f" AND updated_at <= {ph}"
                     params.append(updated_at_lte)
 
                 query += " ORDER BY updated_at DESC"
@@ -227,7 +230,7 @@ class ReviewService:
                 df = pd.read_sql_query(sql=query, con=pandas_conn, params=params)
                 return df
         except Exception as e:
-            print(f"Error retrieving push review logs: {e}")
+            logger.error(f"Error retrieving push review logs: {e}", exc_info=True)
             return pd.DataFrame()
 
 
