@@ -231,6 +231,62 @@ python ui_server.py
 
 **注意**：Dashboard 前端已从 Streamlit 迁移到基于 HTML + TailwindCSS + JavaScript 的实现，前端文件位于 `web/` 目录中。`ui.py` 已废弃，请使用 `ui_server.py` 启动新的前端服务。
 
+### 方案三：systemd 常驻运行
+
+上面的 `python api.py` 跑在终端里，关掉终端就停了。要让它在后台常驻、开机自启、
+崩溃自动重启，用 systemd 托管。
+
+需要两个进程：
+
+| 进程 | 命令 | 端口 | 作用 |
+| --- | --- | --- | --- |
+| API 服务 | `python api.py` | 5001 | 接收 Webhook、触发审查、跑日报定时任务 |
+| Dashboard | `python ui_server.py` | 5002 | 前端看板 |
+
+审查任务**不需要单独的 worker**（默认 `QUEUE_DRIVER=async`，在 API 进程里 fork 子进程执行）。
+
+核心的 unit 文件（完整版见 [docs/SYSTEMD_DEPLOY.md](docs/SYSTEMD_DEPLOY.md)）：
+
+```ini
+# /etc/systemd/system/ai-code-review-api.service
+[Unit]
+Description=Easy AI CodeReview - API 服务
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ai-review
+Group=ai-review
+# 必须指向仓库根目录：config/.env、logs/、data/ 都是相对路径
+WorkingDirectory=/opt/ai-code-review
+Environment=PYTHONUNBUFFERED=1
+Environment=SERVER_PORT=5001
+ExecStart=/opt/ai-code-review/venv/bin/python api.py
+Restart=always
+RestartSec=10
+# 停止时把 fork 出去的审查子进程一起收掉
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Dashboard 同理，把 `ExecStart` 换成 `ui_server.py`、`Environment` 换成 `UI_PORT=5002`。
+
+装好：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now ai-code-review-api ai-code-review-ui
+systemctl status ai-code-review-api
+journalctl -u ai-code-review-api -f
+```
+
+> **改完 `config/.env` 要 `systemctl restart` 才生效。**
+
 ### 配置 Webhook
 
 #### GitLab Webhook 配置
