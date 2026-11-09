@@ -553,10 +553,10 @@ DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=default_t
 
 **解决方案**
 
-1. **确认语言检测功能已启用**
-   ```bash
-   ENABLE_LANGUAGE_DETECTION=1
-   ```
+1. **语言检测是自动的，不需要开关**
+
+   系统按文件扩展名**逐文件**判定语言，再映射到对应的审查方向，不看代码内容、
+   不需要环境变量开关。判定逻辑在 `src/utils/code_reviewer.py`。
 
 2. **检查支持的语言**
    
@@ -568,7 +568,11 @@ DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=default_t
    - PHP (.php)
    - C/C++ (.c, .cpp, .h, .hpp)
    - Vue (.vue)
+   - AUTOSAR ARXML (.arxml)
    - 其他语言使用通用审查提示词
+
+   各类语言的**审查方向**定义在 `config/prompt_templates.yml` 的 `review_profiles` 里，
+   改方向请改那个文件。
 
 3. **查看语言检测日志**
    ```bash
@@ -729,30 +733,40 @@ Push 代码后没有进行代码审查。
 
 **解决方案**
 
-1. **增加请求超时时间**
+1. **减少审查代码量**
+
+   大 diff 是慢的主要原因。`REVIEW_MAX_TOKENS` 控制送进模型的 diff 长度上限，
+   超出部分按顺序截断：
    ```bash
-   REQUEST_TIMEOUT=60  # 默认 30 秒，可根据需要调整
+   REVIEW_MAX_TOKENS=100000  # 默认值
+   ```
+   调小能明显变快，代价是覆盖的文件变少（评论头会列出没审到的文件）。
+   预算不够时源码优先，生成的 ARXML/XML 排在后面。
+
+2. **按供应商调超时**
+
+   超时时间由各供应商的客户端配置决定，例如 GitHub Copilot：
+   ```bash
+   GITHUB_COPILOT_TIMEOUT=60  # 秒
    ```
 
-2. **检查网络连接**
+3. **检查网络连接**
    ```bash
    # 测试 API 服务器连通性
    ping api.deepseek.com
    curl -I https://api.deepseek.com
    ```
 
-3. **减少审查代码量**
-   - 将大的变更拆分为多个小的 Merge Request
-   - 调整 `REVIEW_MAX_TOKENS` 限制
+4. **把大的变更拆分为多个小的 Merge Request**
 
-4. **使用异步队列处理**
+5. **使用异步队列处理**
    
    启用 Redis Queue 进行异步处理，避免阻塞 Webhook 响应：
    ```bash
    QUEUE_DRIVER=rq
    ```
 
-5. **检查 API 服务状态**
+6. **检查 API 服务状态**
    
    某些 API 服务可能在高峰期响应较慢，可以：
    - 使用更高性能的模型
@@ -1061,15 +1075,21 @@ python -m src.cmd.review
    ```
 
 2. **调整并发数**
+
+   并发由 RQ worker 的进程数决定，起多个 worker 就能并发处理多个审查：
    ```bash
-   MAX_CONCURRENT_REVIEWS=5  # 根据服务器性能调整
+   QUEUE_DRIVER=rq
+   # 起 N 个 worker，每个处理一个队列
+   rq worker <队列名> --url redis://127.0.0.1:6379
    ```
+   worker 数量超过 CPU 核数只会增加上下文切换和内存占用。
 
 3. **优化 Token 限制**
    ```bash
    # 平衡审查详细程度和性能
-   REVIEW_MAX_TOKENS=10000  # 不要设置过大
+   REVIEW_MAX_TOKENS=100000
    ```
+   这是送进模型的 diff 长度上限，直接影响响应时间。调小更快，但覆盖的文件变少。
 
 4. **使用更快的模型**
    - 选择响应速度更快的模型

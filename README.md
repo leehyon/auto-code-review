@@ -194,6 +194,25 @@ docker-compose up -d
   - 访问 http://your-server-ip:5002
   - 看到一个审查日志页面，说明 Dashboard 启动成功。
 
+**4. 改了 `config/.env` 之后**
+
+`config/.env` 通过 compose 的 `env_file` 注入，**容器创建时**才生效，所以：
+
+```bash
+docker compose up -d     # 改 .env 后用这个，会重建容器
+```
+
+| 命令 | 改 `.env` 是否生效 | 会重建镜像吗 |
+| --- | --- | --- |
+| `docker compose restart` | ❌ 不生效（容器还是旧的） | 否 |
+| `docker compose up -d` | ✅ 生效（重建容器） | 否 |
+| `docker compose up -d --build` | ✅ 生效 | 是，代码或依赖变了才需要 |
+
+`--build` 只在改了 `src/`、`api.py`、`requirements.txt` 时才需要 —— 改 `.env` 不用重建镜像，
+省下几分钟。
+
+> 本地部署（方案二）同理：改完 `.env` 要重启进程才生效。
+
 ### 方案二：本地 Python 环境部署
 
 **1. 获取源码**
