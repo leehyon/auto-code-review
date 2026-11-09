@@ -160,12 +160,12 @@ class ReviewScopeTest(unittest.TestCase):
         sent = "diff --git a/a/one.c b/a/one.c\n@@ -1 +1 @@\n+int a;\n"
         scope = self.reviewer.build_review_scope(self._changes(), sent)
         block = self.reviewer._format_scope_prompt_block(scope)
-        self.assertIn('变更文件总数：3', block)
-        self.assertIn('实际送入审查：1 个文件', block)
-        self.assertIn('未纳入本次审查的文件', block)
+        self.assertIn('Files changed in this pull request: 3', block)
+        self.assertIn('Files actually reviewed: 1', block)
+        self.assertIn('Files NOT reviewed because of the token budget', block)
         self.assertIn('a/three.c', block)
         # 关键：必须明确禁止模型对没看到的文件下结论
-        self.assertIn('不要推测未纳入文件的状况', block)
+        self.assertIn('Do not speculate about the files that were not', block)
 
     def test_comment_header_has_metadata(self):
         sent = "diff --git a/a/one.c b/a/one.c\n@@ -1 +1 @@\n+int a;\n"
@@ -218,8 +218,8 @@ class ReviewInputCompositionTest(unittest.TestCase):
                 changes, 'fix something', changes,
                 repo_context='### AGENTS.md\n端口命名必须用 P_/R_ 前缀')
         user_text = self.captured['messages'][1]['content']
-        self.assertIn('本次审查范围', user_text)
-        self.assertIn('仓库级约定', user_text)
+        self.assertIn('Review Scope', user_text)
+        self.assertIn('Project Context', user_text)
         self.assertIn('P_/R_ 前缀', user_text)
         self.assertIn('总分:88分', result)
         self.assertTrue(self.reviewer.last_review_scope)
@@ -231,8 +231,30 @@ class ReviewInputCompositionTest(unittest.TestCase):
         with patch.object(CodeReviewer, 'call_llm', side_effect=self._fake_call_llm):
             self.reviewer.review_and_strip_code(changes, 'msg', changes)
         user_text = self.captured['messages'][1]['content']
-        self.assertNotIn('仓库级约定', user_text)
-        self.assertIn('本次审查范围', user_text)
+        self.assertIn('(no project-specific context was provided)', user_text)
+        self.assertIn('Review Scope', user_text)
+
+    def test_mixed_language_diff_gets_separate_check_groups(self):
+        """混合提交：每个文件类型拿到自己的检查点，不串味。"""
+        changes = [
+            {'new_path': 'a/x.arxml', 'old_path': 'a/x.arxml', 'type': 'MODIFY',
+             'diff': '@@ -1 +1 @@\n+<X/>', 'additions': 1, 'deletions': 0},
+            {'new_path': 'a/y.c', 'old_path': 'a/y.c', 'type': 'MODIFY',
+             'diff': '@@ -1 +1 @@\n+int y;', 'additions': 1, 'deletions': 0},
+            {'new_path': 'a/z.cpp', 'old_path': 'a/z.cpp', 'type': 'MODIFY',
+             'diff': '@@ -1 +1 @@\n+auto z = 1;', 'additions': 1, 'deletions': 0},
+        ]
+        with patch.object(CodeReviewer, 'call_llm', side_effect=self._fake_call_llm):
+            self.reviewer.review_and_strip_code(changes, 'msg', changes)
+        user_text = self.captured['messages'][1]['content']
+        self.assertIn('AUTOSAR ARXML files (*.arxml)', user_text)
+        self.assertIn('C files (*.c)', user_text)
+        self.assertIn('C++ files (*.cpp, *.hpp, *.cc, *.cxx, *.h)', user_text)
+        # ARXML 的命名检查点只在 ARXML 组里
+        self.assertIn('Naming: check AR-PACKAGE', user_text)
+        # C 组不能出现 C++ 的 RAII 检查点
+        c_group = user_text.split('### C files (*.c)')[1].split('###')[0]
+        self.assertNotIn('RAII', c_group)
 
 
 class RepoContextReadTest(unittest.TestCase):

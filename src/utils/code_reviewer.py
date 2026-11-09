@@ -62,48 +62,51 @@ class CodeReviewer(BaseReviewer):
         self.client = Factory().getClient()
         # 上一次审查的覆盖度信息（哪些文件真正送进了模型），供评论体使用
         self.last_review_scope = {}
-        # 语言到提示词映射
-        self.language_prompts = {
-            'python': 'python_review_prompt',
-            'javascript': 'javascript_review_prompt',
-            'typescript': 'javascript_review_prompt',
-            'java': 'java_review_prompt',
-            'go': 'go_review_prompt',
-            'php': 'php_review_prompt',
-            'cpp': 'cpp_review_prompt',
-            'c': 'cpp_review_prompt',
-            'vue': 'vue3_review_prompt',
-            'js': 'javascript_review_prompt',
-            'ts': 'javascript_review_prompt',
-            'py': 'python_review_prompt',
-            'autosar': 'autosar_review_prompt',
-            'xml': 'code_review_prompt',
-            'default': 'code_review_prompt',
+        # 语言 -> 检查点分组。每种语言可以对应多组检查
+        # （例如 Vue 同时适用通用前端和 Vue 专属两套）。
+        # 元组含义：(分组标题, profile 名, 检查点键)
+        # 混合语言的提交按文件类型分组给模型，而不是整份 diff 只用一套检查点。
+        self.language_check_groups = {
+            'python': [
+                ('Python files (*.py)', 'python', 'checks'),
+            ],
+            'javascript': [
+                ('JavaScript / TypeScript files (*.js, *.ts, *.jsx, *.tsx)',
+                 'frontend_common', 'checks'),
+            ],
+            'typescript': [
+                ('JavaScript / TypeScript files (*.js, *.ts, *.jsx, *.tsx)',
+                 'frontend_common', 'checks'),
+            ],
+            'vue': [
+                ('Frontend files (*.js, *.ts, *.jsx, *.tsx, *.vue)',
+                 'frontend_common', 'checks'),
+                ('Vue-specific files (*.vue)', 'vue', 'checks'),
+            ],
+            'java': [
+                ('Java files (*.java)', 'java', 'checks'),
+            ],
+            'go': [
+                ('Go files (*.go)', 'go', 'checks'),
+            ],
+            'c': [
+                ('C files (*.c)', 'automotive_cpp', 'checks_c'),
+            ],
+            'cpp': [
+                ('C++ files (*.cpp, *.hpp, *.cc, *.cxx, *.h)', 'automotive_cpp', 'checks'),
+            ],
+            'autosar': [
+                ('AUTOSAR ARXML files (*.arxml)', 'automotive_cpp', 'checks_autosar'),
+            ],
+            'default': [
+                ('Other files', 'general', 'checks'),
+            ],
         }
 
     def _detect_language_from_diff(self, diffs_text: str) -> str:
         """从diff文本中检测主要编程语言"""
-        # 文件扩展名到语言的映射
-        file_extensions = {
-            '.py': 'python',
-            '.js': 'javascript',
-            '.ts': 'typescript',
-            '.jsx': 'javascript',
-            '.tsx': 'typescript',
-            '.vue': 'vue',
-            '.java': 'java',
-            '.go': 'go',
-            '.php': 'php',
-            '.cpp': 'cpp',
-            '.cc': 'cpp',
-            '.cxx': 'cpp',
-            '.c': 'c',
-            '.h': 'cpp',
-            '.hpp': 'cpp',
-            '.arxml': 'autosar',
-            '.xml': 'xml',
-        }
-        
+        file_extensions = self._file_extension_languages()
+
         # 统计各种语言的文件数量
         language_counts = {}
         vue3_indicators = 0
@@ -197,65 +200,118 @@ class CodeReviewer(BaseReviewer):
             logger.info("未检测到特定编程语言，使用通用审查提示词")
         return 'default'
 
-    def _get_appropriate_prompt(self, diffs_text: str) -> str:
-        """根据代码内容选择合适的提示词"""
-        detected_lang = self._detect_language_from_diff(diffs_text)
-        prompt_key = self.language_prompts.get(detected_lang, 'code_review_prompt')
-        
-        # 添加详细的调试日志
-        logger.info(f"语言检测结果: {detected_lang}")
-        logger.info(f"语言映射: {detected_lang} -> {prompt_key}")
-        logger.info(f"可用的语言映射: {self.language_prompts}")
-        
-        # 临时修复：强制Vue文件使用Vue3提示词
-        if detected_lang == 'vue':
-            logger.info("检测到Vue文件，强制使用vue3_review_prompt")
-            return 'vue3_review_prompt'
-        
-        return prompt_key
+    def _detect_file_languages(self, diffs_text: str) -> list:
+        """
+        逐文件识别语言，返回 ``[(文件路径, 语言), ...]``。
 
-    def _load_language_specific_prompts(self, prompt_key: str, style="professional") -> Dict[str, Any]:
-        """加载语言特定的提示词配置"""
+        混合语言的提交必须逐文件判定：整份 diff 选一套检查点会让 C++ 文件套上 C 的规则、
+        arxml 文件拿不到 AUTOSAR 的检查点。
+        """
+        file_extensions = self._file_extension_languages()
+        file_patterns = [
+            r'^\+\+\+ b/(.+)$',   # Git diff 格式: +++ b/file.vue
+            r'^\+\+\+ (.+)$',     # 简化格式: +++ file.vue
+            r'^--- a/(.+)$',        # Git diff 格式: --- a/file.vue
+            r'^--- (.+)$',          # 简化格式: --- file.vue
+            r'^diff --git a/(.+) b/(.+)$',
+        ]
+
+        seen = set()
+        result = []
+        for line in diffs_text.split('\n'):
+            file_path = None
+            for pattern in file_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    file_path = match.group(1)
+                    break
+            if not file_path:
+                continue
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext not in file_extensions:
+                continue
+            if file_path in seen:
+                continue
+            seen.add(file_path)
+            lang = file_extensions[ext]
+            result.append((file_path, lang))
+            logger.info(f"文件语言判定: {file_path} -> {lang}")
+        return result
+
+    def _file_extension_languages(self) -> dict:
+        """扩展名 -> 语言。"""
+        return {
+            '.py': 'python', '.js': 'javascript', '.ts': 'typescript',
+            '.jsx': 'javascript', '.tsx': 'typescript', '.vue': 'vue',
+            '.java': 'java', '.go': 'go', '.php': 'php',
+            '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp', '.c': 'c',
+            '.h': 'cpp', '.hpp': 'cpp', '.arxml': 'autosar', '.xml': 'xml',
+        }
+
+    def _build_profile_checks(self, file_languages: list, templates: dict) -> str:
+        """
+        按文件类型生成检查点分组文本。
+
+        混合提交里每种语言各拿自己那套检查点，每条检查只出现一次；
+        模型按文件的类型/扩展名取用对应的组。
+        """
+        profiles = templates.get("review_profiles", {})
+        used = []
+        seen_groups = set()
+        for _path, lang in file_languages:
+            for group in self.language_check_groups.get(lang, self.language_check_groups['default']):
+                key = (group[1], group[2])
+                if key in seen_groups:
+                    continue
+                seen_groups.add(key)
+                used.append(group)
+
+        if not used:
+            used = [self.language_check_groups['default'][0]]
+
+        lines = ["Apply each group only to the files it covers.",
+                 "A file may be covered by more than one group; in that case apply both."]
+        for title, profile_name, checks_key in used:
+            profile = profiles.get(profile_name) or {}
+            checks = (profile.get(checks_key) or '').strip()
+            if not checks:
+                continue
+            lines.append('')
+            lines.append(f'### {title}')
+            lines.append(checks)
+        return '\n'.join(lines).strip()
+
+    def _load_templates(self) -> dict:
+        """读取提示词模板文件。"""
         prompt_templates_file = "config/prompt_templates.yml"
         try:
             with open(prompt_templates_file, "r", encoding="utf-8") as file:
-                prompts = yaml.safe_load(file).get(prompt_key, {})
-
-                def render_template(template_str: str) -> str:
-                    return Template(template_str).render(style=style)
-
-                system_prompt = render_template(prompts["system_prompt"])
-                user_prompt = render_template(prompts["user_prompt"])
-
-                return {
-                    "system_message": {"role": "system", "content": system_prompt},
-                    "user_message": {"role": "user", "content": user_prompt},
-                }
-        except (FileNotFoundError, KeyError, yaml.YAMLError) as e:
-            logger.error(f"加载语言特定提示词配置失败: {e}")
-            # 如果加载失败，回退到通用提示词
-            return self._load_fallback_prompts(style)
-
-    def _load_fallback_prompts(self, style="professional") -> Dict[str, Any]:
-        """加载通用提示词作为回退"""
-        prompt_templates_file = "config/prompt_templates.yml"
-        try:
-            with open(prompt_templates_file, "r", encoding="utf-8") as file:
-                prompts = yaml.safe_load(file).get("code_review_prompt", {})
-
-                def render_template(template_str: str) -> str:
-                    return Template(template_str).render(style=style)
-
-                system_prompt = render_template(prompts["system_prompt"])
-                user_prompt = render_template(prompts["user_prompt"])
-
-                return {
-                    "system_message": {"role": "system", "content": system_prompt},
-                    "user_message": {"role": "user", "content": user_prompt},
-                }
-        except (FileNotFoundError, KeyError, yaml.YAMLError) as e:
-            logger.error(f"加载通用提示词配置失败: {e}")
+                return yaml.safe_load(file) or {}
+        except (FileNotFoundError, yaml.YAMLError) as e:
+            logger.error(f"加载审查提示词配置失败: {e}")
             raise Exception(f"提示词配置加载失败: {e}")
+
+    def _load_review_prompts(self, profile_checks: str = '', project_context: str = '',
+                             review_scope: str = '', style="professional") -> Dict[str, Any]:
+        """
+        加载基础提示词，user_prompt 的四个动态槽位保留占位符，由 review_code 统一填充。
+
+        - system_prompt：审查方法、约束、评分规则、输出格式（所有语言共用）
+        - user_prompt：项目约定 / 审查范围 / 按文件类型分组的检查点 / diff / 提交信息
+        """
+        templates = self._load_templates()
+        base = templates.get("base_review_prompt", {})
+
+        def render_template(template_str: str) -> str:
+            return Template(template_str).render(style=style)
+
+        return {
+            "system_message": {"role": "system",
+                               "content": render_template(base.get("system_prompt", ""))},
+            "user_message": {"role": "user",
+                             "content": base.get("user_prompt", "")},
+            "templates": templates,
+        }
 
     @staticmethod
     def _build_typed_diff_section(change: dict) -> str:
@@ -344,39 +400,41 @@ class CodeReviewer(BaseReviewer):
 
     @staticmethod
     def _format_scope_prompt_block(scope: dict) -> str:
-        """给模型看的审查范围说明，让它知道自己只看到了哪些文件。"""
+        """Review scope for the model: which files it actually received."""
         if not scope or not scope.get('total_files'):
             return ''
-        labels = {'ADD': '新增', 'MODIFY': '修改', 'DELETE': '删除',
-                  'RENAME': '重命名', 'BINARY': '二进制'}
+        labels = {'ADD': 'added', 'MODIFY': 'modified', 'DELETE': 'deleted',
+                  'RENAME': 'renamed', 'BINARY': 'binary'}
         counts = scope.get('type_counts') or {}
         breakdown = ', '.join(f'{labels.get(t, t)} {n}' for t, n in sorted(counts.items()))
 
-        lines = ['## 本次审查范围']
-        lines.append(f"- 变更文件总数：{scope['total_files']} 个（{breakdown or '无'}）")
-        lines.append(f"- 代码行：新增 {scope['additions']}，删除 {scope['deletions']}")
-        lines.append(f"- 实际送入审查：{len(scope['included_files'])} 个文件"
-                     f"（新增 {scope['sent_additions']} 行，删除 {scope['sent_deletions']} 行）")
+        lines = ['- Files changed in this pull request: '
+                 f"{scope['total_files']} ({breakdown or 'none'})"]
+        lines.append(f"- Lines changed: +{scope['additions']} / -{scope['deletions']}")
+        lines.append(f"- Files actually reviewed: {len(scope['included_files'])} "
+                     f"(+{scope['sent_additions']} / -{scope['sent_deletions']} lines)")
         if scope['excluded_files']:
-            lines.append(f"- 因 token 限制未纳入本次审查的文件：{len(scope['excluded_files'])} 个")
+            lines.append(f"- Files NOT reviewed because of the token budget: "
+                         f"{len(scope['excluded_files'])}")
             for entry in scope['excluded_files']:
-                lines.append(f"    - {entry['path']}"
-                             f"（{labels.get(entry['type'], entry['type'])}, "
-                             f"+{entry['additions']}/-{entry['deletions']}）")
+                lines.append(f"    - {entry['path']} "
+                             f"({labels.get(entry['type'], entry['type'])}, "
+                             f"+{entry['additions']}/-{entry['deletions']})")
+            lines.append('')
+            lines.append('Draw conclusions only about the files that were actually '
+                         'reviewed. Do not speculate about the files that were not, '
+                         'and do not count issues in them as part of this review.')
         else:
-            lines.append('- 本次变更的全部文件均已纳入审查')
-        lines.append('')
-        lines.append('请只针对上述「实际送入审查」的文件给出结论；'
-                     '不要推测未纳入文件的状况，也不要把未纳入文件的问题算进本次审查。')
+            lines.append('- Every changed file was reviewed.')
         return '\n'.join(lines)
 
     @staticmethod
     def _format_scope_comment_header(scope: dict) -> str:
-        """给读者看的审查范围说明，放在评论正文最前面，让人先看到边界。"""
+        """Scope header for the reader, placed above the model's report."""
         if not scope or not scope.get('total_files'):
             return ''
-        labels = {'ADD': '新增', 'MODIFY': '修改', 'DELETE': '删除',
-                  'RENAME': '重命名', 'BINARY': '二进制'}
+        labels = {'ADD': 'added', 'MODIFY': 'modified', 'DELETE': 'deleted',
+                  'RENAME': 'renamed', 'BINARY': 'binary'}
         lines = ['## AI Code Review']
         lines.append(f"**Files Changed**: {scope['total_files']}")
         lines.append(f"**Additions**: +{scope['additions']}")
@@ -499,27 +557,42 @@ class CodeReviewer(BaseReviewer):
         # 截断之后才算覆盖度：只有这时候才知道真正送进模型的是哪些文件
         scope = self.build_review_scope(original_changes_data, changes_text)
         self.last_review_scope = scope
-        logger.info(f"审查覆盖度: {len(scope['included_files'])}/{scope['total_files']} 个文件送入模型, "
-                    f"未纳入 {len(scope['excluded_files'])} 个")
+        logger.info(f"审查覆盖度: {len(scope['included_files'])}/{scope['total_files']} "
+                    f"个文件送入模型, 未纳入 {len(scope['excluded_files'])} 个")
 
-        # 组装最终送进模型的输入：覆盖度说明 + 仓库约定 + diff
-        prompt_input = changes_text
+        # 逐文件判定语言，按文件类型分组生成检查点——混合语言的提交不会串味
+        file_languages = self._detect_file_languages(changes_text)
+        if not file_languages and original_changes_data:
+            ext_map = self._file_extension_languages()
+            for change in original_changes_data:
+                if not isinstance(change, dict):
+                    continue
+                path = change.get('new_path') or change.get('old_path') or ''
+                lang = ext_map.get(os.path.splitext(path)[1].lower())
+                if lang:
+                    file_languages.append((path, lang))
+        templates = self._load_templates()
+        profile_checks = self._build_profile_checks(file_languages, templates)
+        logger.info(f"检查点分组: "
+                    f"{[g[0] for g in self.language_check_groups.get(file_languages[0][1], [])] if file_languages else 'general'}")
+
         scope_block = self._format_scope_prompt_block(scope)
-        if scope_block:
-            prompt_input = f"{scope_block}\n\n{prompt_input}"
-        if repo_context:
-            context_block = ('## 仓库级约定（来自仓库的指令文件，用于理解项目规范，'
-                             '不属于本次变更内容）\n\n' + repo_context)
-            prompt_input = f"{context_block}\n\n{prompt_input}"
+        project_context = repo_context or '(no project-specific context was provided)'
 
-        review_result = self.review_code(prompt_input, commits_text, final_language, original_changes_data).strip()
+        review_result = self.review_code(
+            changes_text, commits_text, final_language, original_changes_data,
+            profile_checks=profile_checks,
+            project_context=project_context,
+            review_scope=scope_block).strip()
         if review_result.startswith("```markdown") and review_result.endswith("```"):
             return review_result[11:-3].strip()
         return review_result
 
     def review_code(self, diffs_text: str, commits_text: str = "",
                     pre_detected_language: Optional[str] = None,
-                    changes_data: Optional[list] = None) -> str:
+                    changes_data: Optional[list] = None,
+                    profile_checks: str = '', project_context: str = '',
+                    review_scope: str = '') -> str:
         """Review 代码并返回结果"""
         # 智能选择提示词
         if pre_detected_language:
@@ -539,25 +612,16 @@ class CodeReviewer(BaseReviewer):
                 detected_lang = self._detect_language_from_changes(changes_data)
                 logger.info(f"从changes数据中检测到的语言: {detected_lang}")
         
-        prompt_key = self.language_prompts.get(detected_lang, 'code_review_prompt')
         style = os.getenv("REVIEW_STYLE", "professional")
-        
-        logger.info(f"检测到的语言对应的提示词: {prompt_key}")
+
+        logger.info(f"检测到的语言: {detected_lang}")
         logger.info(f"当前审查风格: {style}")
-        logger.info(f"可用的语言提示词映射: {self.language_prompts}")
-        
-        # 加载对应的提示词
-        if prompt_key != "code_review_prompt":
-            logger.info(f"使用语言特定提示词: {prompt_key}")
-            try:
-                prompts = self._load_language_specific_prompts(prompt_key, style)
-                logger.info(f"成功加载语言特定提示词: {prompt_key}")
-            except Exception as e:
-                logger.error(f"加载语言特定提示词失败: {e}, 回退到通用提示词")
-                prompts = self._load_fallback_prompts(style)
-        else:
-            logger.info("使用通用提示词: code_review_prompt")
-            prompts = self._load_fallback_prompts(style)
+
+        prompts = self._load_review_prompts(profile_checks=profile_checks,
+                                            project_context=project_context,
+                                            review_scope=review_scope,
+                                            style=style)
+        logger.info("成功加载审查提示词: base + 按文件类型分组的检查点")
         
         # 记录实际使用的提示词内容（前100个字符）
         system_content = prompts["system_message"]["content"]
@@ -568,7 +632,11 @@ class CodeReviewer(BaseReviewer):
             {
                 "role": "user",
                 "content": prompts["user_message"]["content"].format(
-                    diffs_text=diffs_text, commits_text=commits_text
+                    project_context=project_context or '(none provided)',
+                    review_scope=review_scope or '(the whole change was reviewed)',
+                    profile_checks=profile_checks or '(no additional checks)',
+                    diffs_text=diffs_text,
+                    commits_text=commits_text,
                 ),
             },
         ]
@@ -576,26 +644,8 @@ class CodeReviewer(BaseReviewer):
 
     def _detect_language_from_changes(self, changes_data: list) -> str:
         """从changes数据中检测主要编程语言"""
-        file_extensions = {
-            '.py': 'python',
-            '.js': 'javascript',
-            '.ts': 'typescript',
-            '.jsx': 'javascript',
-            '.tsx': 'typescript',
-            '.vue': 'vue',
-            '.java': 'java',
-            '.go': 'go',
-            '.php': 'php',
-            '.cpp': 'cpp',
-            '.cc': 'cpp',
-            '.cxx': 'cpp',
-            '.c': 'c',
-            '.h': 'cpp',
-            '.hpp': 'cpp',
-            '.arxml': 'autosar',
-            '.xml': 'xml',
-        }
-        
+        file_extensions = self._file_extension_languages()
+
         language_counts = {}
         
         for change in changes_data:
@@ -622,6 +672,10 @@ class CodeReviewer(BaseReviewer):
         """解析 AI 返回的 Review 结果，返回评分"""
         if not review_text:
             return 0
-        match = re.search(r"总分[:：]\s*(\d+)分?", review_text)
+        # 兼容三种写法：Review Score: 88 / **Review Score**: 88 / 总分:88分
+        # 容忍 markdown 粗体与全角冒号
+        match = re.search(
+            r"(?:review\s*score|total\s*score|总分)\*{0,2}\s*[:：]\s*\**\s*(\d+)",
+            review_text, re.IGNORECASE)
         return int(match.group(1)) if match else 0
 

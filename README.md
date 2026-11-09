@@ -505,28 +505,61 @@ Dashboard 由 `ui_server.py` 提供，这是一个基于 Flask 的轻量级服�
 
 **位置**: `config/prompt_templates.yml`
 
-项目的核心配置，定义了各语言的审查提示词。每个键是一个模板，包含 `system_prompt`
-（角色、审查维度、输出格式、评分要求）和 `user_prompt`（插入 diff 与提交信息）。
+分两层，避免每加一种语言就抄一遍输出格式：
 
 ```yaml
-code_review_prompt:
-  system_prompt: |-
-    你是一位资深的软件开发工程师，专注于代码的规范性、功能性、安全性和稳定性。
-    ...（审查维度与评分权重见模板）
-  user_prompt: |-
-    请对以下代码进行专业审查：
+base_review_prompt:      # 审查范围、约束、评分规则、输出格式（全部语言共用，全英文）
+  system_prompt: |-      # 审查方法 + Summary / Issues / Questions / Good Practices
+  user_prompt: |-       # 五个槽位，由程序填充
 
-    {diffs_text}
-
-    提交信息：{commits_text}
+review_profiles:         # 只写差异化的检查点
+  general:
+  python:
+  frontend_common:       # JS / TS / Vue 通用
+  react:
+  vue:
+  java:
+  go:
+  automotive_cpp:        # C++，另含 checks_c / checks_autosar
 ```
 
-按语言分为 `python_review_prompt`、`javascript_review_prompt`、`java_review_prompt`、
-`go_review_prompt`、`php_review_prompt`、`cpp_review_prompt`、`vue3_review_prompt`、
-`autosar_review_prompt`（AUTOSAR ARXML）。新增语言请复制一份模板再改。
+`user_prompt` 的五个槽位，程序负责填，模板里只放占位符：
 
-> `system_prompt` 里必须要求输出「总分:XX 分」，评分是靠正则从报告里提取的；
-> `user_prompt` 里必须保留 `{diffs_text}` 和 `{commits_text}` 两个占位符。
+| 槽位 | 内容 |
+| --- | --- |
+| `{project_context}` | 仓库根目录自动发现的约定文件（AGENTS.md 等） |
+| `{review_scope}` | 本次实际审查了哪些文件、哪些没审 |
+| `{profile_checks}` | 按文件类型分组的检查点 |
+| `{diffs_text}` | 变更内容 |
+| `{commits_text}` | 提交信息 |
+
+**混合语言的提交按文件类型分组给检查点**，不是整份 diff 只用一套：
+
+```
+### AUTOSAR ARXML files (*.arxml)   → naming / port semantics / interface consistency
+### C files (*.c)                   → MISRA C / VLA / volatile / 位域
+### C++ files (*.cpp, *.hpp, ...)  → MISRA C++ / RAII / ABI 兼容性
+### Frontend files (*.js, *.ts, *.vue) → 类型安全 / 异步 / XSS / 可访问性
+### Vue-specific files (*.vue)      → 响应式 / 组件契约 / 生命周期
+```
+
+所以一个同时改了 arxml + C + C++ 的 PR，三类文件各拿自己那套检查点，不会互相串味。
+每条检查点只出现一次，模型按文件类型取用对应的组。
+
+审查报告的结构固定为：
+
+```
+## Summary
+- Overall Risk Level / Total Issues / Blocking Issues / Review Score / Merge Recommendation
+## Issues
+### [SEVERITY] Title → Severity / Category / Location
+  → Problem / Standard Violation (Rule ID) / Evidence / Impact / Recommendation
+## Questions / Needs Confirmation   (Optional，存疑项不计入分数)
+## Good Practices Observed (Optional)
+```
+
+> `base` 的 Summary 里必须要求输出 `Review Score: <0-100>`，评分靠正则从报告里提取；
+> `user_prompt` 里必须保留上面五个占位符。
 
 ### 审查风格配置
 
@@ -595,23 +628,35 @@ SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.
 
 #### 智能语言检测
 
-系统按文件扩展名自动检测主要语言并选择对应的专业提示词：Python / JavaScript / TypeScript /
-Vue3 / Java / Go / PHP / C / C++ / **AUTOSAR ARXML**；扩展名不认识时用通用
-`code_review_prompt`，不会靠代码内容猜。
+系统按文件扩展名**逐文件**判定语言：Python / JavaScript / TypeScript / Vue / Java / Go /
+C / C++ / **AUTOSAR ARXML**；扩展名不认识时用通用检查点，不会靠代码内容猜。
+逐文件判定是必须的 —— 整份 diff 只选一套检查点会让 C++ 文件套上 C 的规则、
+ARXML 文件拿不到 AUTOSAR 的命名和端口语义检查。
 
-#### Vue3 专门审查功能
+#### 按文件类型分组的检查点
 
-系统按 `.vue` 扩展名识别 Vue 文件，并检测 Vue3 特有语法特征（`setup()`、`defineProps`、
-`ref()`、`reactive()` 等），命中后使用 `vue3_review_prompt` 做 Composition API、
-响应式、组件设计、性能等维度的专项审查。具体维度同样定义在提示词模板里。
+判定出每个文件的语言后，程序把这次变更涉及的检查点按文件类型分组，
+一次性送进模型（不拆分多次调用）：
+
+| 文件类型 | 检查点 |
+| --- | --- |
+| `*.arxml` | 命名规范、端口方向语义、接口一致性、生成文件处理建议 |
+| `*.c` | MISRA C、指针生命周期、中断上下文、UB（VLA、变参）、实时性 |
+| `*.cpp` / `*.hpp` | MISRA C++ / AUTOSAR C++14、RAII、内存生命周期、ABI 兼容性 |
+| `*.js` / `*.ts` / `*.vue` | 类型安全、异步竞态、XSS、状态管理、可访问性 |
+| `*.vue` | 追加响应式 API、组件契约、生命周期清理、`v-for` key |
+| `*.py` / `*.java` / `*.go` | 各语言专属检查点 |
+
+同一类文件只出现一次检查点，模型按文件类型取用对应的组。
 
 #### 详细审查维度
 
 每个审查都会从代码质量、安全性、性能、错误处理、可维护性等维度展开，
 并给出「问题描述 → 修改前后对照 → 评分明细 → 总结」的结构化报告。
+存疑但证据不足的项放进 `Questions / Needs Confirmation`，不计入分数。
 
-**具体的维度和输出格式要求定义在 `config/prompt_templates.yml` 里**，按语言分模板；
-新增或修改维度请改模板，不要改本文档，以免两处不一致。
+**具体的维度和输出格式要求定义在 `config/prompt_templates.yml` 里**（全英文），
+按语言分 profile；新增或修改维度请改 profile，不要改本文档，以免两处不一致。
 
 ### 专项审查提示词
 
