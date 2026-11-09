@@ -5,6 +5,7 @@ load_dotenv("config/.env")
 import atexit
 import json
 import os
+import threading
 import traceback
 from datetime import datetime
 from urllib.parse import urlparse
@@ -26,7 +27,7 @@ from src.utils.log import logger
 from src.utils.queue import handle_queue
 from src.utils.reporter import Reporter
 
-from src.utils.config_checker import check_config
+from src.utils.config_checker import check_config, check_llm_connectivity
 
 api_app = Flask(__name__, static_folder='web', static_url_path='')
 
@@ -301,8 +302,15 @@ def handle_webhook():
     gitea_event = request.headers.get('X-Gitea-Event')
     # Bitbucket Server/Data Center 通过 X-Event-Key 传递事件类型（GitHub/Gitea 不会发送该 header）
     bitbucket_event = request.headers.get('X-Event-Key')
+    # 某些链路（反向代理、企业网关、中间件）会丢掉自定义 header。
+    # Bitbucket 的 payload 里带 eventKey 字段，可以据此兜底识别，
+    # 否则请求会落进 GitLab 分支，报一个和真实原因无关的 "Missing GitLab URL"
+    if not bitbucket_event:
+        bitbucket_event = data.get('eventKey') or ''
 
-    logger.debug(f'GitHub event: {github_event}, Gitea event: {gitea_event}, Bitbucket event: {bitbucket_event}')
+    logger.info(f'Webhook 事件识别: GitHub={github_event or "-"}, '
+                f'Gitea={gitea_event or "-"}, Bitbucket={bitbucket_event or "-"}, '
+                f'payload.eventKey={data.get("eventKey") or "-"}')
 
     # 优先识别 Gitea（因为 Gitea 会同时发送两种 header，但 GitHub 不会发送 Gitea header）
     if gitea_event:  # Gitea webhook（优先）
@@ -311,6 +319,19 @@ def handle_webhook():
         return handle_github_webhook(github_event, data)
     elif bitbucket_event and is_bitbucket_event(bitbucket_event):  # Bitbucket Server/Data Center webhook
         return handle_bitbucket_webhook(bitbucket_event, data, raw_body)
+    elif not any((github_event, gitea_event, bitbucket_event)):
+        # 一个平台的事件头都没有：说明请求不是来自任何已支持的平台，
+        # 或者链路把 header 丢了。明确报错，不要让请求掉进 GitLab 分支
+        logger.error('Webhook 请求没有携带任何平台事件头，无法识别来源: '
+                     f'X-GitHub-Event={github_event or "-"}, '
+                     f'X-Gitea-Event={gitea_event or "-"}, '
+                     f'X-Event-Key={request.headers.get("X-Event-Key") or "-"}, '
+                     f'payload.eventKey={data.get("eventKey") or "-"}')
+        return jsonify({
+            'message': 'Unrecognized webhook: no platform event header '
+                       '(X-Event-Key / X-GitHub-Event / X-Gitea-Event) and no '
+                       'eventKey in the payload.'
+        }), 400
     else:  # GitLab webhook（默认）
         return handle_gitlab_webhook(data)
 
@@ -469,6 +490,7 @@ def handle_gitea_webhook(event_type, data):
 # Bitbucket Server/Data Center 的事件类型（通过 X-Event-Key header 传递）
 # 注意：Bitbucket Cloud 使用的是 pullrequest: / repo:push，与下面的取值不同，不会被误判
 BITBUCKET_PR_EVENT_PREFIX = 'pr:'
+BITBUCKET_PING_EVENT = 'diagnostics:ping'
 BITBUCKET_REPO_EVENTS = (
     'repo:refs_changed',  # push
     'repo:modified',
@@ -483,7 +505,9 @@ def is_bitbucket_event(event_key: str) -> bool:
     """判断 X-Event-Key 是否为 Bitbucket Server/Data Center 的事件。"""
     if not event_key:
         return False
-    return event_key.startswith(BITBUCKET_PR_EVENT_PREFIX) or event_key in BITBUCKET_REPO_EVENTS
+    return (event_key.startswith(BITBUCKET_PR_EVENT_PREFIX)
+            or event_key in BITBUCKET_REPO_EVENTS
+            or event_key == BITBUCKET_PING_EVENT)
 
 
 def extract_bitbucket_url(data: dict) -> str:
@@ -537,6 +561,13 @@ def handle_bitbucket_webhook(event_type, data, raw_body: bytes = b''):
     request_id = request.headers.get('X-Request-Id', '')
     if request_id:
         logger.info(f'Bitbucket webhook request id: {request_id}')
+
+    # diagnostics:ping 是 Bitbucket webhook 配置页「Test connection」按钮发来的连通性探测。
+    # 它不携带业务数据，也不该触发审查，直接回 200 让配置页显示测试成功。
+    # 放在签名校验之前：探测事件没有副作用，没必要因为签名不匹配而让用户看到失败。
+    if event_type == BITBUCKET_PING_EVENT:
+        logger.info('Bitbucket diagnostics:ping received, replying pong.')
+        return jsonify({'message': 'pong'}), 200
 
     # 校验 webhook 签名：配置了 BITBUCKET_WEBHOOK_SECRET 才校验。
     # Bitbucket 在 webhook 设置了 Secret 后会带上 X-Hub-Signature 头，
@@ -603,11 +634,26 @@ def handle_bitbucket_webhook(event_type, data, raw_body: bytes = b''):
             {'message': f'Bitbucket event {event_type} is ignored, no code review required.'}), 200
 
 
-if __name__ == '__main__':
-    check_config()
+def start_server():
+    """启动 Web 服务。
+
+    配置检查只查环境变量和 provider，这两项是瞬时的。
+    LLM 连通性检查会发真实网络请求，网络不通时要等 1~2 分钟
+    （GitHub Copilot 先探测 endpoint、再换 token，各带 30 秒超时），
+    所以放到后台线程里跑，Web 服务立刻开始监听 —— 否则这段时间里
+    webhook 请求会直接连接失败（Bitbucket 的 Test connection 会报连接超时）。
+    """
+    check_config(check_connectivity=False)
+    threading.Thread(target=check_llm_connectivity, name='llm-connectivity-check',
+                     daemon=True).start()
+
     # 启动定时任务调度器
     setup_scheduler()
 
     # 启动Flask API服务
     port = int(os.environ.get('SERVER_PORT', 5001))
     api_app.run(host='0.0.0.0', port=port)
+
+
+if __name__ == '__main__':
+    start_server()

@@ -63,10 +63,17 @@ def check_llm_connectivity():
     else:
         logger.error("LLM连接可能有问题，请检查配置项。")
 
-def check_config():
-    """主检查入口"""
+def check_config(check_connectivity: bool = True):
+    """主检查入口
+
+    :param check_connectivity: 是否做 LLM 连通性检查。这会发真实网络请求，
+        网络不通时可能耗时 1~2 分钟（GitHub Copilot 要先探测 endpoint、
+        再换 token，各自带 30 秒超时）。Web 服务启动时应该传 False，
+        把连通性检查放到后台线程，避免端口迟迟不监听。
+    """
     logger.info("开始检查配置项...")
     check_env_vars()
     check_llm_provider()
-    check_llm_connectivity()
+    if check_connectivity:
+        check_llm_connectivity()
     logger.info("配置项检查完成。")
