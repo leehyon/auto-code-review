@@ -1,13 +1,11 @@
-![Push图片](./docs/img/ai-code.jpg)
-
 ## 项目简介
 
-本项目是一个基于大模型的自动化代码审查工具，帮助开发团队在代码合并或提交时，快速进行智能化的审查(Code Review)，提升代码质量和开发效率。
+本项目是一个基于大模型的自动化代码审查工具，帮助开发团队在代码合并或提交时，快速进行智能化的审查，提升代码质量和开发效率。
 
 ## 功能
 
 - 🚀 多模型灵活切换
-  - 全面兼容 **DeepSeek、OpenAI、通义千问** 想用哪个，用哪个！轻松上手，自由切换。
+  - 全面兼容 **DeepSeek、OpenAI、通义千问、GitHub Copilot** 想用哪个，用哪个！轻松上手，自由切换。
 - 📢 消息实时送达
   - 审查结果 **一键推送** 到 **钉钉、企业微信、飞书**  及时响应，代码问题无所遁形！
 - 📅 自动生成开发日报
@@ -29,27 +27,23 @@
   | 🤪 **幽默型** | 搞笑风趣、快乐改码 | *这段 if-else 比我相亲经历还复杂！* |
 
 
-## 效果图:
+## 效果图
 
 ### Push 推送示例
 
-![Push图片](./docs/img/push_example.png)
+![Push 推送消息](./docs/img/push.jpeg)
 
 ### 代码审查摘要
 
-![Abstract图片](./docs/img/abstract.png)
+![日报摘要](./docs/img/abstract.png)
 
-### GitLab 评论示例
+### 评论示例
 
-![Gitlab评论图片](./docs/img/comment.png)
-
-### Gitea 评论示例
-
-![Gitea评论图片](./docs/img/gitea.png)
+![Gitea 审查评论](./docs/img/gitea.png)
 
 ### Dashboard 数据看板
 
-![Dashboard图片](./docs/img/dashboard.png)
+![Dashboard 数据看板](./docs/img/dashboard.png)
 
 ## 原理
 
@@ -200,7 +194,7 @@ docker-compose up -d
   - 访问 http://your-server-ip:5002
   - 看到一个审查日志页面，说明 Dashboard 启动成功。
 
-### 方案二：本地Python环境部署
+### 方案二：本地 Python 环境部署
 
 **1. 获取源码**
 
@@ -223,13 +217,13 @@ pip install -r requirements.txt
 
 **4. 启动服务**
 
-- 启动API服务：
+- 启动 API 服务：
 
 ```bash
 python api.py
 ```
 
-- 启动Dashboard服务：
+- 启动 Dashboard 服务：
 
 ```bash
 python ui_server.py
@@ -241,32 +235,32 @@ python ui_server.py
 
 #### GitLab Webhook 配置
 
-**1. 创建Access Token**
+**1. 创建 Access Token**
 
 方法一：在 GitLab 个人设置中，创建一个 Personal Access Token。
 
-方法二：在 GitLab 项目设置中，创建Project Access Token
+方法二：在 GitLab 项目设置中，创建 Project Access Token
 
 **2. 配置 Webhook**
 
 在 GitLab 项目设置中，配置 Webhook：
 
 - URL：http://your-server-ip:5001/review/webhook
-- Trigger Events：勾选 Push Events 和 Merge Request Events (不要勾选其它Event)
+- Trigger Events：勾选 Push Events 和 Merge Request Events (不要勾选其它 Event)
 - Secret Token：上面配置的 Access Token(可选)
 
 **备注**
 
-1. Token使用优先级
+1. Token 使用优先级
   - 系统优先使用 .env 文件中的 `GITLAB_ACCESS_TOKEN`。
-  - 如果 .env 文件中没有配置 `GITLAB_ACCESS_TOKEN`，则使用 Webhook 传递的Secret Token。
+  - 如果 .env 文件中没有配置 `GITLAB_ACCESS_TOKEN`，则使用 Webhook 传递的 Secret Token。
 2. 网络访问要求
   - 请确保 GitLab 能够访问本系统。
   - 若内网环境受限，建议将系统部署在外网服务器上。
 
 #### GitHub Webhook 配置
 
-**1. 创建Access Token**
+**1. 创建 Access Token**
 
 在 GitHub 个人设置中，创建一个 Personal Access Token，需要 `repo` 权限。
 
@@ -290,7 +284,7 @@ GITHUB_URL=https://api.github.com
 
 #### Gitea Webhook 配置
 
-**1. 创建Access Token**
+**1. 创建 Access Token**
 
 在 Gitea 个人设置中，创建一个 Access Token，需要 `repo` 权限。
 
@@ -439,27 +433,6 @@ BITBUCKET_REPO_CONTEXT_MAX_BYTES=20000
 - **个人仓库**：project key 形如 `~用户名`（如 `~LIYAHONG`），大小写不敏感，系统会自动处理。
 - **Bitbucket Cloud 不适用**：Bitbucket Cloud（bitbucket.org）使用 REST API 2.0 与不同的 payload 结构，当前版本不支持。
 
-### 审查覆盖度与仓库约定
-
-审查结果里始终会写清楚**这次到底审了什么**，避免出现「看着像完整审查、其实只看了两个文件」的情况：
-
-```
-## AI Code Review
-**Files Changed**: 6
-**Additions**: +511
-**Deletions**: -4001
-**Reviewed**: 2 of 6 files (budget-limited)
-**Skipped**: Dcm_V.xml, Os_V.xml, ...
-```
-
-同一份信息也会在送给模型之前告知模型，并明确要求它不要对未纳入的文件下结论。
-
-需要注意的几点：
-
-- **被删除的文件会被保留**：删除的文件、重命名的文件、二进制文件都会作为显式条目进入审查，模型能知道「这次删了某个文件」，而不仅仅是看到一堆 `-` 行。删除整个文件和删除文件里的一个定义，语义完全不同。
-- **超出 token 预算时不会整份丢弃后面的文件**：当前实现按顺序截断，因此 `Reviewed` 少于 `Files Changed` 时，`Skipped` 会列出没被审到的文件。这种情况下审查结论只对 `Reviewed` 覆盖的文件成立。
-- **仓库级约定**：系统会**自动从仓库根目录发现**常见约定文件（`AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、`.github/copilot-instructions.md`、`.cursorrules`、`.clinerules`、`.windsurfrules`、`GEMINI.md`、`README.md`），从 PR 的**目标分支**读取（有行数和字节数上限），作为「项目约定」提供给模型。**多个项目不需要逐个配置**。文件不存在或读取失败会跳过，不影响审查本身。需要指定别的文件时设置 `BITBUCKET_REPO_CONTEXT_FILES`（逗号分隔），该变量会覆盖自动发现的清单。
-
 ### 配置消息推送
 
 #### 1.配置钉钉推送
@@ -512,49 +485,48 @@ Dashboard 由 `ui_server.py` 提供，这是一个基于 Flask 的轻量级服�
 
 ### 大模型供应商配置
 
-项目支持多种大模型供应商，通过 `LLM_PROVIDER` 环境变量配置：
+项目支持多种大模型供应商，通过 `LLM_PROVIDER` 环境变量配置（`openai` / `deepseek` /
+`qwen` / `github_copilot`）。支持的完整列表见 `src/llm/factory.py`。
 
 **位置**: `src/llm/factory.py`
 
-```python
-# 支持的大模型供应商
-chat_model_providers = {
-    'openai': lambda: OpenAIClient(),        # OpenAI
-    'deepseek': lambda: DeepSeekClient(),    # DeepSeek
-    'qwen': lambda: QwenClient(),           # 通义千问
-}
-```
-
-### 各模型API配置
+### 各模型 API 配置
 
 **位置**: `src/llm/client/` 目录下的各客户端文件
 
-每个模型都有对应的API配置环境变量：
-
-| 模型 | API密钥 | API地址 | 模型名称 |
+| 模型 | API 密钥 | API 地址 | 模型名称 |
 |------|---------|---------|----------|
 | **OpenAI** | `OPENAI_API_KEY` | `OPENAI_API_BASE_URL` | `OPENAI_API_MODEL` |
 | **DeepSeek** | `DEEPSEEK_API_KEY` | `DEEPSEEK_API_BASE_URL` | `DEEPSEEK_API_MODEL` |
 | **通义千问** | `QWEN_API_KEY` | `QWEN_API_BASE_URL` | `QWEN_API_MODEL` |
+| **GitHub Copilot** | `GITHUB_COPILOT_TOKEN` | 自动发现（可覆盖） | `GITHUB_COPILOT_MODEL` |
 
 ### 代码审查提示词模板
 
 **位置**: `config/prompt_templates.yml`
 
-这是项目的核心关键词配置，定义了代码审查的标准化提示词：
+项目的核心配置，定义了各语言的审查提示词。每个键是一个模板，包含 `system_prompt`
+（角色、审查维度、输出格式、评分要求）和 `user_prompt`（插入 diff 与提交信息）。
 
 ```yaml
 code_review_prompt:
   system_prompt: |-
     你是一位资深的软件开发工程师，专注于代码的规范性、功能性、安全性和稳定性。
-    
-    ### 代码审查目标：
-    1. 功能实现的正确性与健壮性（40分）：确保代码逻辑正确，能够处理各种边界情况和异常输入
-    2. 安全性与潜在风险（30分）：检查代码是否存在安全漏洞，并评估其潜在风险
-    3. 是否符合最佳实践（20分）：评估代码是否遵循行业最佳实践
-    4. 性能与资源利用效率（5分）：分析代码的性能表现
-    5. Commits信息的清晰性与准确性（5分）：检查提交信息是否清晰、准确
+    ...（审查维度与评分权重见模板）
+  user_prompt: |-
+    请对以下代码进行专业审查：
+
+    {diffs_text}
+
+    提交信息：{commits_text}
 ```
+
+按语言分为 `python_review_prompt`、`javascript_review_prompt`、`java_review_prompt`、
+`go_review_prompt`、`php_review_prompt`、`cpp_review_prompt`、`vue3_review_prompt`、
+`autosar_review_prompt`（AUTOSAR ARXML）。新增语言请复制一份模板再改。
+
+> `system_prompt` 里必须要求输出「总分:XX 分」，评分是靠正则从报告里提取的；
+> `user_prompt` 里必须保留 `{diffs_text}` 和 `{commits_text}` 两个占位符。
 
 ### 审查风格配置
 
@@ -565,31 +537,56 @@ code_review_prompt:
 - **`professional`**: 专业严谨风格 - 使用标准的工程术语，保持专业严谨
 - **`sarcastic`**: 讽刺性语言风格 - 大胆使用讽刺性语言，但要确保技术指正准确
 - **`gentle`**: 温和建议风格 - 多用"建议"、"可以考虑"等温和措辞
-- **`humorous`**: 幽默风格 - 在技术点评中加入适当幽默元素和Emoji
+- **`humorous`**: 幽默风格 - 在技术点评中加入适当幽默元素和 Emoji
 
 ### 文件类型过滤配置
 
-**位置**: `src/gitlab/webhook_handler.py`, `src/github/webhook_handler.py`
+**位置**: `src/<platform>/webhook_handler.py`
 
-通过 `SUPPORTED_EXTENSIONS` 环境变量控制哪些文件类型会被审查。`.arxml` 用于 AUTOSAR ARXML 配置，`.xml` 用于通用 XML：
+通过 `SUPPORTED_EXTENSIONS` 环境变量控制哪些文件类型会被审查（`.arxml` 用于 AUTOSAR
+ARXML 配置，`.xml` 用于通用 XML）：
 
 ```bash
 SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.ts,.jsx,.tsx,.arxml,.xml
 ```
 
-### Token限制配置
+> 扩展名不在列表里的文件会被**静默跳过**（不报错、不发评论）。新增文件类型时记得
+> 同时改 `config/.env` 和 `config/.env.dist`。
+
+### Token 限制配置
 
 **位置**: `src/utils/code_reviewer.py`
 
-通过 `REVIEW_MAX_TOKENS` 环境变量控制发送给大模型的文本长度：
+`REVIEW_MAX_TOKENS` 控制发送给大模型的 diff 文本长度上限（默认 10000）。
+超出时按顺序截断，**后面的文件会整份丢失** —— 审查结果里的 `Skipped` 会列出没审到的文件。
 
-```python
-review_max_tokens = int(os.getenv("REVIEW_MAX_TOKENS", 10000))
+### 审查覆盖度与仓库约定
+
+审查结果开头会写清楚**这次到底审了什么**，避免「看着像完整审查、其实只看了两个文件」：
+
+```text
+## AI Code Review
+**Files Changed**: 6
+**Additions**: +511
+**Deletions**: -4001
+**Reviewed**: 2 of 6 files (budget-limited)
+**Skipped**: Dcm_V.xml, Os_V.xml, ...
 ```
+
+同一份信息在送进模型前也会告知模型，并要求它不要对未纳入的文件下结论。
+
+三个要点：
+
+- **删除/重命名/二进制的文件不会被丢弃**，模型能知道「这次删了某个文件」，而不只是看到一堆 `-` 行。删除整个文件和删除文件里的一个定义，语义完全不同。
+- **`Reviewed` 小于 `Files Changed` 时**，说明有一部分文件因 token 预算没被审到，结论只对 `Reviewed` 覆盖的文件成立。
+- **仓库级约定自动发现**：系统会从仓库根目录找 `AGENTS.md`、`CLAUDE.md`、`CONTRIBUTING.md`、
+  `.github/copilot-instructions.md` 等常见约定文件，从 PR 的**目标分支**有界读取后作为
+  「项目约定」提供给模型。**多个项目不需要逐个配置**；要指定别的文件时设置
+  `BITBUCKET_REPO_CONTEXT_FILES`（覆盖自动发现）。文件不存在会跳过，不影响审查。
 
 ### 功能开关配置
 
-- **`PUSH_REVIEW_ENABLED`**: 是否启用Push事件审查
+- **`PUSH_REVIEW_ENABLED`**: 是否启用 Push 事件审查
 - **`MERGE_REVIEW_ONLY_PROTECTED_BRANCHES_ENABLED`**: 是否仅对受保护分支进行审查
 
 ### 详细审查模式配置
@@ -598,76 +595,23 @@ review_max_tokens = int(os.getenv("REVIEW_MAX_TOKENS", 10000))
 
 #### 智能语言检测
 
-系统会自动检测代码的主要编程语言，并选择相应的专业审查提示词：
+系统按文件扩展名自动检测主要语言并选择对应的专业提示词：Python / JavaScript / TypeScript /
+Vue3 / Java / Go / PHP / C / C++ / **AUTOSAR ARXML**；扩展名不认识时用通用
+`code_review_prompt`，不会靠代码内容猜。
 
-- **Python代码**: 使用 `python_review_prompt`，重点关注PEP 8规范、类型提示、异常处理等
-- **JavaScript/TypeScript代码**: 使用 `javascript_review_prompt`，重点关注ES6+特性、类型安全、异步处理等
-- **Vue3代码**: 使用 `vue3_review_prompt`，重点关注Composition API、性能优化、TypeScript集成等
-- **Java代码**: 使用 `java_review_prompt`，重点关注设计模式、异常处理、线程安全等
-- **其他语言**: 使用通用 `code_review_prompt`
+#### Vue3 专门审查功能
 
-#### Vue3专门审查功能
-
-**Vue3检测机制**：
-- 自动识别Vue文件（.vue扩展名）
-- 检测Vue3特有语法特征（setup()、defineProps、ref()、reactive()等）
-- 智能选择Vue3专用审查提示词
-
-**Vue3审查维度**：
-1. **Composition API使用**：响应式数据、生命周期钩子、组合函数、响应式解构
-2. **模板语法和指令**：v-if vs v-show、v-for优化、事件处理、双向绑定
-3. **组件设计**：Props定义、Emits定义、组件通信、组件拆分
-4. **性能优化**：响应式优化、计算属性、异步组件、虚拟滚动
-5. **TypeScript集成**：类型定义、泛型使用、接口定义
-6. **状态管理**：Pinia使用、状态设计、持久化
-7. **路由和导航**：路由守卫、路由懒加载、路由参数
-8. **错误处理和调试**：错误边界、调试工具、错误日志
-9. **样式和UI**：CSS作用域、CSS变量、响应式设计
-10. **测试和文档**：单元测试、文档注释、README
+系统按 `.vue` 扩展名识别 Vue 文件，并检测 Vue3 特有语法特征（`setup()`、`defineProps`、
+`ref()`、`reactive()` 等），命中后使用 `vue3_review_prompt` 做 Composition API、
+响应式、组件设计、性能等维度的专项审查。具体维度同样定义在提示词模板里。
 
 #### 详细审查维度
 
-每个审查都会从以下维度进行详细分析：
+每个审查都会从代码质量、安全性、性能、错误处理、可维护性等维度展开，
+并给出「问题描述 → 修改前后对照 → 评分明细 → 总结」的结构化报告。
 
-**代码质量检查**:
-- 命名规范：变量、函数、类名是否清晰、有意义、符合语言规范
-- 代码结构：函数长度、复杂度、嵌套层级是否合理
-- 注释质量：是否有必要的注释，注释是否准确、有用
-- 代码重复：是否存在重复代码，是否可以通过重构优化
-
-**安全性检查**:
-- 输入验证：是否正确验证和清理用户输入
-- SQL注入防护：是否使用参数化查询或ORM
-- XSS防护：是否正确转义输出内容
-- 权限控制：是否正确检查用户权限
-- 敏感信息：是否暴露了敏感信息（密码、密钥等）
-
-**性能优化**:
-- 算法效率：是否存在性能瓶颈，时间复杂度是否合理
-- 资源管理：是否正确管理内存、数据库连接等资源
-- 缓存使用：是否合理使用缓存机制
-- 数据库查询：查询是否优化，是否避免N+1问题
-
-**错误处理**:
-- 异常处理：是否正确处理异常情况
-- 边界条件：是否考虑了各种边界情况
-- 错误信息：错误信息是否清晰、有用
-- 日志记录：是否记录了必要的日志信息
-
-**可维护性**:
-- 模块化：代码是否模块化，职责是否清晰
-- 可测试性：代码是否易于测试
-- 可扩展性：代码是否易于扩展和修改
-- 文档完整性：是否有必要的文档说明
-
-#### 输出格式要求
-
-审查报告会包含以下详细内容：
-
-1. **问题描述和优化建议**: 问题位置、问题描述、影响分析、具体建议、优先级
-2. **代码示例**: 修改前代码、修改后代码、修改说明
-3. **评分明细**: 具体分数、扣分原因、改进建议
-4. **总结**: 主要问题、改进重点、总分
+**具体的维度和输出格式要求定义在 `config/prompt_templates.yml` 里**，按语言分模板；
+新增或修改维度请改模板，不要改本文档，以免两处不一致。
 
 ### 专项审查提示词
 
@@ -677,7 +621,7 @@ review_max_tokens = int(os.getenv("REVIEW_MAX_TOKENS", 10000))
 
 审查目录结构的组织逻辑、命名规范性、模块化程度、可维护性等。
 
-#### 2. MySQL数据库审查
+#### 2. MySQL 数据库审查
 
 **位置**: `src/cmd/functions/mysql.py`
 
@@ -697,49 +641,12 @@ review_max_tokens = int(os.getenv("REVIEW_MAX_TOKENS", 10000))
 
 ### 环境变量配置示例
 
-```bash
-# 大模型供应商配置
-LLM_PROVIDER=deepseek
-
-# DeepSeek配置
-DEEPSEEK_API_KEY=your_api_key_here
-DEEPSEEK_API_BASE_URL=https://api.deepseek.com
-DEEPSEEK_API_MODEL=deepseek-chat
-
-# 审查配置
-REVIEW_STYLE=professional
-REVIEW_MAX_TOKENS=10000
-SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.ts,.jsx,.tsx,.arxml,.xml
-
-# 功能开关
-PUSH_REVIEW_ENABLED=1
-MERGE_REVIEW_ONLY_PROTECTED_BRANCHES_ENABLED=0
-
-# GitLab配置
-GITLAB_ACCESS_TOKEN=your_gitlab_token_here
-GITLAB_URL=https://your-gitlab-instance.com
-
-# GitHub配置
-GITHUB_ACCESS_TOKEN=your_github_token_here
-GITHUB_URL=https://api.github.com
-
-# Gitea配置
-GITEA_ACCESS_TOKEN=your_gitea_token_here
-GITEA_URL=https://your-gitea-instance.com
-GITEA_USE_ISSUE_MODE=1  # 是否使用Issue模式存储审查结果
-
-# Bitbucket Server/Data Center配置
-BITBUCKET_URL=https://bitbucket.example.com
-BITBUCKET_ACCESS_TOKEN=your_bitbucket_access_token_here
-
-# 消息推送配置
-DINGTALK_ENABLED=1
-DINGTALK_WEBHOOK_URL=your_dingtalk_webhook_url
-```
+完整的环境变量清单见 [`config/.env.dist`](config/.env.dist)，复制为 `config/.env` 后按需修改；
+各平台的具体配置项见上文对应章节。
 
 <!-- ## 其它
 
-**1.如何对整个代码库进行Review?**
+**1.如何对整个代码库进行 Review?**
 
 可以通过命令行工具对整个代码库进行审查。当前功能仍在不断完善中，欢迎试用并反馈宝贵意见！具体操作如下：
 
