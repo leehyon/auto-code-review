@@ -265,6 +265,27 @@ class TestFilterChanges(unittest.TestCase):
     def test_skips_empty_path(self):
         self.assertEqual(filter_changes([{'new_path': '', 'diff': '+x'}]), [])
 
+    def test_xml_is_not_reviewed(self):
+        """`.xml` 不在 SUPPORTED_EXTENSIONS 里，不该被审查。"""
+        os.environ['SUPPORTED_EXTENSIONS'] = '.java,.arxml'
+        changes = [
+            {'new_path': 'a/Dcm_V.xml', 'diff': '+<x/>', 'type': 'MODIFY'},
+            {'new_path': 'a/Model.arxml', 'diff': '+<Y/>', 'type': 'MODIFY'},
+            {'new_path': 'a/Demo.java', 'diff': '+int a;', 'type': 'MODIFY'},
+        ]
+        filtered = filter_changes(changes)
+        self.assertEqual(sorted(c['new_path'] for c in filtered),
+                         ['a/Demo.java', 'a/Model.arxml'])
+
+    def test_empty_extension_entry_does_not_disable_filtering(self):
+        """SUPPORTED_EXTENSIONS 里不能有空元素，否则 endswith('') 恒真、过滤全失效。"""
+        os.environ['SUPPORTED_EXTENSIONS'] = '.java,'
+        filtered = filter_changes([
+            {'new_path': 'a/Dcm_V.xml', 'diff': '+<x/>'},
+            {'new_path': 'a/Demo.java', 'diff': '+int a;'},
+        ])
+        self.assertEqual([c['new_path'] for c in filtered], ['a/Demo.java'])
+
 
 class TestPathHelpers(unittest.TestCase):
 

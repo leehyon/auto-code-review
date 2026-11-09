@@ -62,45 +62,20 @@ class CodeReviewer(BaseReviewer):
         self.client = Factory().getClient()
         # 上一次审查的覆盖度信息（哪些文件真正送进了模型），供评论体使用
         self.last_review_scope = {}
-        # 语言 -> 检查点分组。每种语言可以对应多组检查
-        # （例如 Vue 同时适用通用前端和 Vue 专属两套）。
-        # 元组含义：(分组标题, profile 名, 检查点键)
-        # 混合语言的提交按文件类型分组给模型，而不是整份 diff 只用一套检查点。
-        self.language_check_groups = {
-            'python': [
-                ('Python files (*.py)', 'python', 'checks'),
-            ],
-            'javascript': [
-                ('JavaScript / TypeScript files (*.js, *.ts, *.jsx, *.tsx)',
-                 'frontend_common', 'checks'),
-            ],
-            'typescript': [
-                ('JavaScript / TypeScript files (*.js, *.ts, *.jsx, *.tsx)',
-                 'frontend_common', 'checks'),
-            ],
-            'vue': [
-                ('Frontend files (*.js, *.ts, *.jsx, *.tsx, *.vue)',
-                 'frontend_common', 'checks'),
-                ('Vue-specific files (*.vue)', 'vue', 'checks'),
-            ],
-            'java': [
-                ('Java files (*.java)', 'java', 'checks'),
-            ],
-            'go': [
-                ('Go files (*.go)', 'go', 'checks'),
-            ],
-            'c': [
-                ('C files (*.c)', 'automotive_cpp', 'checks_c'),
-            ],
-            'cpp': [
-                ('C++ files (*.cpp, *.hpp, *.cc, *.cxx, *.h)', 'automotive_cpp', 'checks'),
-            ],
-            'autosar': [
-                ('AUTOSAR ARXML files (*.arxml)', 'automotive_cpp', 'checks_autosar'),
-            ],
-            'default': [
-                ('Other files', 'general', 'checks'),
-            ],
+        # 语言 -> 领域。领域决定用哪一段方向提示，方向给的是关注方向而不是
+        # 逐条检查清单——穷举清单会诱导模型为凑满格式而编问题。
+        # 同一个领域可以覆盖多种语言（automotive 同时管 C / C++ / ARXML）。
+        self.language_domains = {
+            'python': ['python'],
+            'javascript': ['frontend'],
+            'typescript': ['frontend'],
+            'vue': ['frontend'],
+            'java': ['java'],
+            'go': ['go'],
+            'c': ['automotive'],
+            'cpp': ['automotive'],
+            'autosar': ['automotive'],
+            'default': ['general'],
         }
 
     def _detect_language_from_diff(self, diffs_text: str) -> str:
@@ -245,41 +220,43 @@ class CodeReviewer(BaseReviewer):
             '.jsx': 'javascript', '.tsx': 'typescript', '.vue': 'vue',
             '.java': 'java', '.go': 'go', '.php': 'php',
             '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp', '.c': 'c',
-            '.h': 'cpp', '.hpp': 'cpp', '.arxml': 'autosar', '.xml': 'xml',
+            '.h': 'cpp', '.hpp': 'cpp', '.arxml': 'autosar',
+            # .xml 不参与语言/领域判定：它可能是 pom.xml、Jenkins 配置等，
+            # 归到 automotive 会带进无关的 AUTOSAR 方向。
         }
+
+    def _domains_for(self, languages: list) -> list:
+        """本次变更涉及哪些领域。"""
+        domains = []
+        for lang in languages:
+            for domain in self.language_domains.get(lang, self.language_domains['default']):
+                if domain not in domains:
+                    domains.append(domain)
+        return domains or ['general']
 
     def _build_profile_checks(self, file_languages: list, templates: dict) -> str:
         """
-        按文件类型生成检查点分组文本。
+        按本次变更涉及的领域，拼接方向提示。
 
-        混合提交里每种语言各拿自己那套检查点，每条检查只出现一次；
-        模型按文件的类型/扩展名取用对应的组。
+        一个领域一段（例如 automotive 一段覆盖 C / C++ / ARXML），不去逐条列举
+        检查项；模型自己按语言和领域做工程判断，没证据就不报。
         """
         profiles = templates.get("review_profiles", {})
-        used = []
-        seen_groups = set()
+        domains = []
         for _path, lang in file_languages:
-            for group in self.language_check_groups.get(lang, self.language_check_groups['default']):
-                key = (group[1], group[2])
-                if key in seen_groups:
-                    continue
-                seen_groups.add(key)
-                used.append(group)
+            for domain in self.language_domains.get(lang, self.language_domains['default']):
+                if domain not in domains:
+                    domains.append(domain)
 
-        if not used:
-            used = [self.language_check_groups['default'][0]]
+        if not domains:
+            domains = ['general']
 
-        lines = ["Apply each group only to the files it covers.",
-                 "A file may be covered by more than one group; in that case apply both."]
-        for title, profile_name, checks_key in used:
-            profile = profiles.get(profile_name) or {}
-            checks = (profile.get(checks_key) or '').strip()
-            if not checks:
-                continue
-            lines.append('')
-            lines.append(f'### {title}')
-            lines.append(checks)
-        return '\n'.join(lines).strip()
+        blocks = []
+        for domain in domains:
+            text = (profiles.get(domain) or {}).get('checks', '').strip()
+            if text:
+                blocks.append(text)
+        return '\n\n'.join(blocks)
 
     def _load_templates(self) -> dict:
         """读取提示词模板文件。"""
@@ -573,8 +550,8 @@ class CodeReviewer(BaseReviewer):
                     file_languages.append((path, lang))
         templates = self._load_templates()
         profile_checks = self._build_profile_checks(file_languages, templates)
-        logger.info(f"检查点分组: "
-                    f"{[g[0] for g in self.language_check_groups.get(file_languages[0][1], [])] if file_languages else 'general'}")
+        logger.info(f"审查方向领域: "
+                    f"{self._domains_for([lang for _p, lang in file_languages])}")
 
         scope_block = self._format_scope_prompt_block(scope)
         project_context = repo_context or '(no project-specific context was provided)'

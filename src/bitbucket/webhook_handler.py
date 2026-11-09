@@ -22,6 +22,7 @@ from urllib.parse import quote
 
 import requests
 
+from src.utils.file_filter import supported_extensions as get_supported_extensions
 from src.utils.log import logger
 
 # Bitbucket REST API 前缀。默认使用 1.0（兼容性最好），可通过环境变量覆盖为 /rest/api/latest。
@@ -117,7 +118,7 @@ def filter_changes(changes: list) -> list:
     ``type`` 和 ``old_path`` 是可选附加字段：有 type 才能把删除/重命名/二进制
     渲染成正确的 diff 段，否则它们会被当成普通修改，模型看到的东西和真实语义对不上。
     """
-    supported_extensions = os.getenv('SUPPORTED_EXTENSIONS', '.java,.py,.php').split(',')
+    supported_extensions = get_supported_extensions()
 
     filtered_changes = []
     for item in changes:

@@ -5,6 +5,7 @@ from urllib.parse import urljoin
 import fnmatch
 import requests
 
+from src.utils.file_filter import supported_extensions as get_supported_extensions
 from src.utils.log import logger
 
 
@@ -14,7 +15,7 @@ def filter_changes(changes: list):
     复用 GitLab 的 filter_changes 逻辑（格式相同）
     '''
     # 从环境变量中获取支持的文件扩展名
-    supported_extensions = os.getenv('SUPPORTED_EXTENSIONS', '.java,.py,.php').split(',')
+    supported_extensions = get_supported_extensions()
 
     filter_deleted_files_changes = [change for change in changes if not change.get("deleted_file")]
 

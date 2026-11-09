@@ -234,8 +234,8 @@ class ReviewInputCompositionTest(unittest.TestCase):
         self.assertIn('(no project-specific context was provided)', user_text)
         self.assertIn('Review Scope', user_text)
 
-    def test_mixed_language_diff_gets_separate_check_groups(self):
-        """混合提交：每个文件类型拿到自己的检查点，不串味。"""
+    def test_mixed_language_diff_gets_domain_direction(self):
+        """混合提交：C/C++/ARXML 同属 automotive 领域，一段方向覆盖三者。"""
         changes = [
             {'new_path': 'a/x.arxml', 'old_path': 'a/x.arxml', 'type': 'MODIFY',
              'diff': '@@ -1 +1 @@\n+<X/>', 'additions': 1, 'deletions': 0},
@@ -247,14 +247,14 @@ class ReviewInputCompositionTest(unittest.TestCase):
         with patch.object(CodeReviewer, 'call_llm', side_effect=self._fake_call_llm):
             self.reviewer.review_and_strip_code(changes, 'msg', changes)
         user_text = self.captured['messages'][1]['content']
-        self.assertIn('AUTOSAR ARXML files (*.arxml)', user_text)
-        self.assertIn('C files (*.c)', user_text)
-        self.assertIn('C++ files (*.cpp, *.hpp, *.cc, *.cxx, *.h)', user_text)
-        # ARXML 的命名检查点只在 ARXML 组里
-        self.assertIn('Naming: check AR-PACKAGE', user_text)
-        # C 组不能出现 C++ 的 RAII 检查点
-        c_group = user_text.split('### C files (*.c)')[1].split('###')[0]
-        self.assertNotIn('RAII', c_group)
+        flat = ' '.join(user_text.split())
+        self.assertIn('This review may contain C, C++ and AUTOSAR ARXML files', flat)
+        # 命名规则交给 Project Context，方向段本身不列命名规范
+        self.assertIn('Project-specific naming rules apply only when explicitly '
+                      'provided in Project Context', flat)
+        self.assertNotIn('AR-PACKAGE', user_text)
+        # 一段方向覆盖三类文件，不按文件类型拆三段
+        self.assertEqual(user_text.count('This review may contain'), 1)
 
 
 class RepoContextReadTest(unittest.TestCase):

@@ -4,6 +4,7 @@ import time
 
 import requests
 import fnmatch
+from src.utils.file_filter import supported_extensions as get_supported_extensions
 from src.utils.log import logger
 
 
@@ -14,7 +15,7 @@ def filter_changes(changes: list):
     专门处理GitHub格式的变更
     '''
     # 从环境变量中获取支持的文件扩展名
-    supported_extensions = os.getenv('SUPPORTED_EXTENSIONS', '.java,.py,.php').split(',')
+    supported_extensions = get_supported_extensions()
     
     # 筛选出未被删除的文件
     not_deleted_changes = []

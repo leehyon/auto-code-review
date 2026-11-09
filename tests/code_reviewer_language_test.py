@@ -98,79 +98,84 @@ class LanguageDetectionTest(unittest.TestCase):
 
 
 class CheckGroupingTest(unittest.TestCase):
-    """混合提交按文件类型分组，不串味。"""
+    """按领域给一段方向提示，不逐条罗列检查点。"""
 
     def setUp(self):
         with patch("src.utils.code_reviewer.Factory"):
             self.reviewer = CodeReviewer()
         self.templates = self.reviewer._load_templates()
 
-    def _groups(self, diff):
-        checks = self.reviewer._build_profile_checks(
+    def _checks(self, diff):
+        return self.reviewer._build_profile_checks(
             self.reviewer._detect_file_languages(diff), self.templates)
-        groups = {}
-        current = None
-        for line in checks.split('\n'):
-            if line.startswith('### '):
-                current = line[4:]
-                groups[current] = []
-            elif line.startswith('- ') and current:
-                groups[current].append(line)
-        return groups, checks
 
-    def test_mixed_diff_gets_five_groups(self):
-        groups, _ = self._groups(MIXED_DIFF)
-        self.assertEqual(len(groups), 5)
+    def test_mixed_diff_gets_two_domain_blocks(self):
+        """C/C++/ARXML 归一段 automotive，前端归一段 frontend。"""
+        checks = self._checks(MIXED_DIFF)
+        self.assertIn('This review may contain C, C++ and AUTOSAR ARXML files', checks)
+        self.assertIn('This review may contain JavaScript, TypeScript and Vue files', checks)
+        self.assertEqual(checks.count('This review may contain'), 2)
 
-    def test_each_file_type_gets_its_own_checks(self):
-        groups, _ = self._groups(MIXED_DIFF)
-        autosar = ' '.join(groups['AUTOSAR ARXML files (*.arxml)'])
-        self.assertIn('Naming', autosar)
-        self.assertIn('Port semantics', autosar)
+    def test_automotive_block_covers_c_cpp_and_arxml_together(self):
+        """C、C++、ARXML 同属 automotive，不拆成三段。"""
+        checks = self._checks(MIXED_DIFF)
+        block = checks.split('This review may contain C, C++ and AUTOSAR ARXML files')[1]
+        block = block.split('This review may contain')[0]
+        for topic in ('undefined behavior', 'lifetime', 'concurrency', 'real-time',
+                      'port direction', 'ComSpec', 'Runnable mappings',
+                      'Cross-file consistency'):
+            self.assertIn(topic, block)
 
-        c_group = ' '.join(groups['C files (*.c)'])
-        self.assertIn('MISRA C', c_group)
-        self.assertIn('volatile', c_group)
-        self.assertNotIn('MISRA C++', c_group)
+    def test_automotive_block_defers_naming_to_project_context(self):
+        checks = self._checks(MIXED_DIFF)
+        flat = ' '.join(checks.split())
+        self.assertIn('Project-specific naming rules apply only when explicitly '
+                      'provided in Project Context', flat)
+        self.assertIn('recommend changing its source model or generation '
+                      'configuration', flat)
 
-        cpp_group = ' '.join(groups['C++ files (*.cpp, *.hpp, *.cc, *.cxx, *.h)'])
-        self.assertIn('MISRA C++', cpp_group)
-        self.assertIn('RAII', cpp_group)
-        self.assertNotIn('VLAs', cpp_group)
+    def test_frontend_block_is_one_paragraph_for_js_ts_vue(self):
+        checks = self._checks(MIXED_DIFF)
+        self.assertIn('Type safety and unjustified `any`', checks)
+        self.assertIn('Accessibility of the affected UI', checks)
 
-    def test_vue_gets_both_frontend_groups(self):
-        """.vue 同时适用通用前端和 Vue 专属两套检查点。"""
-        groups, _ = self._groups(MIXED_DIFF)
-        frontend = ' '.join(groups['Frontend files (*.js, *.ts, *.jsx, *.tsx, *.vue)'])
-        vue = ' '.join(groups['Vue-specific files (*.vue)'])
-        self.assertIn('Type safety', frontend)
-        self.assertIn('Accessibility', frontend)
-        self.assertIn('Reactivity', vue)
-        self.assertIn('watchEffect', vue)
+    def test_no_exhaustive_checklist_in_profile(self):
+        """profile 是方向段，不是检查项清单——条目化会诱导模型凑问题。"""
+        for name, profile in self.templates['review_profiles'].items():
+            bullets = [ln for ln in profile['checks'].split('\n') if ln.strip().startswith('- ')]
+            self.assertLessEqual(len(bullets), 6,
+                                 f'{name} 列了 {len(bullets)} 条，超出方向段的定位')
 
-    def test_no_arxml_checks_leak_into_other_groups(self):
-        groups, _ = self._groups(MIXED_DIFF)
-        for title, lines in groups.items():
-            if 'arxml' in title:
-                continue
-            body = ' '.join(lines)
-            self.assertNotIn('AR-PACKAGE', body, f'{title} 混进了 ARXML 检查点')
-            self.assertNotIn('Port semantics', body, f'{title} 混进了 ARXML 检查点')
-
-    def test_each_check_appears_once(self):
-        """同一条检查不能在两个组里重复出现。"""
-        _, checks = self._groups(MIXED_DIFF)
-        bullets = [ln.strip() for ln in checks.split('\n') if ln.strip().startswith('- ')]
-        self.assertEqual(len(bullets), len(set(bullets)))
-
-    def test_single_language_diff_gets_one_group(self):
-        groups, _ = self._groups(ARXML_DIFF)
-        self.assertEqual(list(groups.keys()), ['AUTOSAR ARXML files (*.arxml)'])
+    def test_single_language_diff_gets_one_block(self):
+        checks = self._checks(ARXML_DIFF)
+        self.assertEqual(checks.count('This review may contain'), 1)
+        self.assertIn('AUTOSAR ARXML files', checks)
 
     def test_unmapped_files_fall_back_to_general(self):
         checks = self.reviewer._build_profile_checks([], self.templates)
-        self.assertIn('Other files', checks)
-        self.assertIn('Branch completeness', checks)
+        self.assertIn('files in several languages', checks)
+        self.assertIn('Correctness and undefined behavior', checks)
+
+    def test_xml_files_are_ignored_for_domain_selection(self):
+        """.xml 不参与领域判定：它可能是 pom.xml 之类，套 automotive 方向是噪音。"""
+        diff = ("diff --git a/build/pom.xml b/build/pom.xml\n"
+                "--- a/build/pom.xml\n+++ b/build/pom.xml\n@@ -1 +1 @@\n+<x/>\n"
+                "diff --git a/Sources/a.c b/Sources/a.c\n"
+                "--- a/Sources/a.c\n+++ b/Sources/a.c\n@@ -1 +1 @@\n+int a;\n")
+        files = dict(self.reviewer._detect_file_languages(diff))
+        self.assertNotIn('build/pom.xml', files)
+        self.assertEqual(files['Sources/a.c'], 'c')
+
+        checks = self._checks(diff)
+        self.assertIn('This review may contain C, C++ and AUTOSAR ARXML files', checks)
+
+    def test_xml_only_diff_falls_back_to_general(self):
+        """只有 .xml 时不该拉进 automotive 方向。"""
+        diff = ("diff --git a/build/pom.xml b/build/pom.xml\n"
+                "--- a/build/pom.xml\n+++ b/build/pom.xml\n@@ -1 +1 @@\n+<x/>\n")
+        checks = self._checks(diff)
+        self.assertNotIn('AUTOSAR', checks)
+        self.assertIn('files in several languages', checks)
 
 
 class BasePromptContractTest(unittest.TestCase):
@@ -189,17 +194,19 @@ class BasePromptContractTest(unittest.TestCase):
         self.assertIn("Blocking Issues", system)
         self.assertIn("Do not invent file names", system)
 
-    def test_base_has_no_language_checks(self):
-        """检查点不该混进 base，否则每个语言都会带上别人的检查点。
-
-        base 里出现 MISRA C++:2008 这类版本名是允许的——那是「不要混用规则版本」
-        的清单，不是检查点条目。
-        """
+    def test_base_has_no_domain_specific_guidance(self):
+        """base 必须与语言和领域无关，任何领域的具体内容都不该出现在里面。"""
         system = self.reviewer._load_review_prompts()["system_message"]["content"]
-        for check_only_in_a_profile in ('AR-PACKAGE', 'Reactivity', 'Type safety',
-                                        'Branch completeness', 'VLAs',
-                                        'standard compliance'):
-            self.assertNotIn(check_only_in_a_profile, system)
+        for domain_specific in ('AR-PACKAGE', 'ComSpec', 'Runnable', 'MISRA',
+                                'AUTOSAR', 'Type safety', 'goroutine', 'Vue',
+                                'React', 'unhandled rejections'):
+            self.assertNotIn(domain_specific, system)
+
+    def test_base_is_short(self):
+        """base 只留审查方法和输出协议，不能越写越长。"""
+        system = self.reviewer._load_review_prompts()["system_message"]["content"]
+        self.assertLess(len(system), 6000)
+        self.assertLess(len(system.split('\n')), 170)
 
     def test_user_prompt_has_all_slots(self):
         user = self.reviewer._load_review_prompts()["user_message"]["content"]
@@ -218,7 +225,7 @@ class BasePromptContractTest(unittest.TestCase):
 
     def test_unknown_style_falls_back(self):
         system = self.reviewer._load_review_prompts(style="nonsense")["system_message"]["content"]
-        self.assertIn("professional, neutral tone", system)
+        self.assertIn("standard engineering terminology", system)
 
 
 class ReviewScoreParsingTest(unittest.TestCase):

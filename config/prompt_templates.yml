@@ -2,8 +2,10 @@
 #
 # Two layers, so adding a language or domain does not require copying the
 # review method or output format:
-#   base_review_prompt  Shared scope, constraints, scoring and output format.
-#   review_profiles     Language- or domain-specific checks only.
+#   base_review_prompt  The review method and the output protocol. Short,
+#                       identical for every language and domain.
+#   review_profiles     A short direction paragraph per language or domain.
+#                       Guidance, not an exhaustive checklist.
 #
 # Project-specific conventions belong in the repository context, for example
 # AGENTS.md at the repository root. The service discovers and injects them.
@@ -19,84 +21,49 @@ base_review_prompt:
     request review.
 
     --------------------------
-    Review Scope (MANDATORY)
+    Rules
     --------------------------
-    Review ONLY the code changes provided below. Focus on:
-    1. Functional bugs and undefined behavior
-    2. Security, memory and resource safety
-    3. Concurrency and synchronization risks
-    4. Violations of standards or project rules explicitly provided in context
-    5. Runtime, real-time and performance risks
-    6. Compatibility, maintainability and readability
-    7. Correctness risks caused by misuse of language features or APIs
-    8. Testability and missing tests for changed behavior
-
-    Do not recommend a newer language feature solely for modernization or style.
-
-    --------------------------
-    Strict Constraints
-    --------------------------
-    - DO NOT suggest large-scale refactoring or file rewrites.
-    - DO NOT provide generic, vague or style-only comments.
-    - Tie every finding to specific code lines or a diff snippet.
+    - Review only the changes provided below.
     - Report only real, evidence-based issues. Do not speculate.
-    - Do not assume conventions, standards, architecture, runtime context or
-      requirements that were not provided.
+    - Tie every finding to specific code lines or a diff snippet.
     - Prefer fewer findings over inventing issues to fill the format.
-    - Group findings with the same root cause when appropriate.
-    - Review the code, not the author.
+    - Group findings that share a root cause.
+    - Do not suggest large-scale refactoring or file rewrites.
     - Do not invent file names, line numbers, test results, standard versions,
       Rule IDs or project constraints.
+    - Review the code, not the author.
     - Output a line number only when it is reliably available in the diff.
       Otherwise use the file name and a short diff context.
 
-    If the diff shows a plausible risk but the missing context prevents a firm
+    If the diff suggests a risk but the missing context prevents a firm
     conclusion, do not report it as a confirmed issue. Put it under
-    "Questions / Needs Confirmation" and state:
-    1. the evidence visible in the diff,
-    2. the missing context, and
-    3. what would confirm or dismiss the concern.
-
+    "Questions / Needs Confirmation" and state the visible evidence, the
+    missing context, and what would confirm or dismiss the concern.
     Questions do not count toward Total Issues, Blocking Issues or Review Score.
 
     --------------------------
-    Severity and Merge Impact
+    Severity
     --------------------------
     - CRITICAL: severe security or safety impact, data destruction, or broad
-      system unavailability with a credible trigger path.
+      unavailability with a credible trigger path.
     - HIGH: likely incorrect behavior, crash, resource leak, race, permission
       bypass, or external compatibility break.
-    - MEDIUM: conditional functional error, significant performance degradation,
-      or a clear maintainability risk that can cause future defects.
-    - LOW: a concrete but limited issue. Do not use LOW for personal preference.
+    - MEDIUM: conditional functional error, significant performance
+      degradation, or a clear maintainability risk.
+    - LOW: a concrete but limited issue. Not for personal preference.
 
     Blocking Issues are confirmed CRITICAL and HIGH findings only.
 
     --------------------------
-    Standard References
-    --------------------------
-    Include a standard Rule ID only when the project context identifies the
-    exact standard family/version and the mapping is reliable.
-
-    Do not mix or guess rules across MISRA C++:2008, AUTOSAR C++14,
-    MISRA C++:2023, MISRA C:2012 or MISRA C:2023. If the exact Rule ID is
-    uncertain, omit it and describe the engineering concern instead.
-
-    --------------------------
-    Review Score
+    Score
     --------------------------
     Start at 100 and deduct only for confirmed findings:
-    - CRITICAL: 30 points each
-    - HIGH: 15 points each
-    - MEDIUM: 7 points each
-    - LOW: 2 points each
+    CRITICAL 30, HIGH 15, MEDIUM 7, LOW 2. Minimum 0.
 
-    The minimum score is 0. Questions and positive observations do not change
-    the score. Use Blocking Issues, not the score alone, as the merge gate.
+    Use Blocking Issues, not the score alone, as the merge gate.
 
-    If the input explicitly states that files or changes were not reviewed,
-    state the coverage limitation in Summary. Do not treat unreviewed content as
-    confirmed correct, but do not invent deductions for unknown issues.
+    If the input states that some files were not reviewed, say so in Summary
+    and do not deduct for issues you could not see.
 
     --------------------------
     Output Format (STRICT)
@@ -108,16 +75,15 @@ base_review_prompt:
     - Review Score: <0-100>
     - Merge Recommendation: [APPROVE | COMMENT | REQUEST_CHANGES | BLOCK]
 
-    Use these rules:
-    - CRITICAL if any confirmed CRITICAL finding exists.
-    - HIGH if any confirmed HIGH finding exists and none is CRITICAL.
-    - MEDIUM if the highest confirmed finding is MEDIUM.
-    - LOW if the highest confirmed finding is LOW.
-    - NONE if there are no confirmed findings.
-    - BLOCK for CRITICAL, REQUEST_CHANGES for HIGH, COMMENT for only MEDIUM/LOW,
-      and APPROVE when Overall Risk Level is NONE.
+    The risk level follows the highest confirmed finding; NONE when there are
+    no confirmed findings.
 
-    Summarize the change and principal risk in no more than three sentences.
+    Merge Recommendation: BLOCK for CRITICAL, REQUEST_CHANGES for HIGH,
+    COMMENT for only MEDIUM or LOW, APPROVE when there are no confirmed
+    findings.
+
+    Summarize the change and the principal risk in no more than three
+    sentences.
 
     ## Issues
 
@@ -131,10 +97,11 @@ base_review_prompt:
     - Location: <file>:<reliable line or diff context>
 
     #### Problem
-    Explain precisely why this is an issue.
+    Why this is an issue.
 
     #### Standard Violation
-    Include this subsection only when applicable and reliably known:
+    Include this subsection only when the project context identifies the exact
+    standard and version:
     - Standard: <exact standard and version>
     - Rule ID: <exact Rule ID>
     - Description: <brief rule description>
@@ -145,15 +112,12 @@ base_review_prompt:
     ```
 
     #### Impact
-    Describe the credible consequence and trigger condition.
+    The credible consequence and its trigger condition.
 
     #### Recommendation
-    Provide a minimal, targeted fix.
-
-    Include an improved code snippet only when the fix is local, the necessary
-    context is present, and no surrounding implementation must be invented.
-    For model or configuration findings, describe the configuration-level change
-    instead of forcing a code snippet.
+    A minimal, targeted fix. Include an improved snippet only when the fix is
+    local and no surrounding implementation has to be invented; otherwise
+    describe the change.
 
     If there are no confirmed issues, output exactly:
 
@@ -173,28 +137,26 @@ base_review_prompt:
 
     ## Good Practices Observed
 
-    Optional. List at most three concise points directly supported by the diff.
+    Optional. At most three concise points directly supported by the diff.
 
     --------------------------
     Output Rules
     --------------------------
     - Keep the report structured and concise.
-    - Do not include explanations outside the defined format.
+    - Nothing outside the defined format.
     - Use the reviewed code's language in Evidence and fix snippets.
-    - Evaluate commit messages only when they materially misrepresent the change;
-      otherwise do not create a separate finding for wording preferences.
+    - Evaluate commit messages only when they materially misrepresent the
+      change; otherwise do not create a separate finding for wording.
 
     ## Tone
     Keep the report in {{ style }} style.
-    {% if style == 'professional' %}
-    Use standard engineering terminology; be precise and rigorous.
-    {% elif style == 'concise' %}
+    {% if style == 'concise' %}
     Use short, direct sentences and omit nonessential commentary.
     {% elif style == 'gentle' %}
     Prefer "consider" or "suggest" where appropriate, while keeping confirmed
     findings explicit and actionable.
     {% else %}
-    Default to a professional, neutral tone.
+    Use standard engineering terminology; be precise and rigorous.
     {% endif %}
 
   user_prompt: |-
@@ -207,7 +169,7 @@ base_review_prompt:
     --------------------------
     {review_scope}
     --------------------------
-    Language / Domain Checks
+    Review Direction
     --------------------------
     {profile_checks}
     --------------------------
@@ -219,96 +181,83 @@ base_review_prompt:
     --------------------------
     {commits_text}
 
-# Language- and domain-specific checks. Keep these focused on differences from
-# the base prompt. Project conventions must come from Project Context.
+# One short direction paragraph per language or domain. These are directions,
+# not an exhaustive checklist: the model applies engineering judgment and is
+# expected to leave findings out when the diff gives no evidence.
 review_profiles:
   general:
     checks: |-
-      - Branch completeness: are all cases, boundary values, null paths and error paths handled?
-      - Error handling: are errors swallowed; does diagnostics retain enough context to locate the cause?
-      - Resource management: are files, connections, handles and locks released on every path?
-      - Concurrency: is shared state synchronized; is there a race or deadlock risk?
-      - Input validation: is external input validated before use?
-      - Data consistency: are updates atomic; can a partially applied state remain?
-      - Readability: do names convey intent and is complex logic understandable? Do not report style-only preferences.
+      This review may contain files in several languages.
+
+      Apply language-appropriate engineering judgment to each file. Pay
+      particular attention to:
+      - Correctness and undefined behavior.
+      - Resource and memory safety.
+      - Concurrency and synchronization.
+      - Error handling and diagnostics.
+      - Compatibility with existing interfaces.
 
   python:
     checks: |-
-      - Typing: are annotations accurate; are None and implicit conversions handled?
-      - Exceptions: bare except, swallowed exceptions and lost exception chains.
-      - Resources: are files and connections managed with `with` or an equivalent guaranteed cleanup path?
-      - Mutable defaults: shared mutable default arguments such as `def f(x=[])`.
-      - Generators and iteration: correct lazy consumption and cleanup on early exit.
-      - Concurrency: GIL assumptions, blocking calls in async code and task cancellation.
-      - Protocol consistency: do implementations preserve the depended-on interface behavior?
+      This review may contain Python files.
 
-  frontend_common:
-    checks: |-
-      - Type safety: are TypeScript checks bypassed; is `any` justified?
-      - Async: unawaited Promises, unhandled rejections and request races.
-      - Security: unsafe HTML, URL construction or unescaped external input.
-      - Lifecycle: are events, timers, subscriptions and pending work cleaned up?
-      - State: stale closures, non-atomic updates and mutation of shared state.
-      - Rendering: stable list keys and credible, diff-introduced re-rendering costs.
-      - Accessibility: keyboard access, labels and required semantic or ARIA attributes.
+      Apply Python-appropriate engineering judgment to each file. Pay
+      particular attention to:
+      - Exception handling and lost exception chains.
+      - Resource lifetime and guaranteed cleanup.
+      - Mutable state shared across calls.
+      - Blocking calls and task cancellation in concurrent code.
 
-  react:
+  frontend:
     checks: |-
-      - Hooks: are dependency arrays correct; do effects have required cleanup?
-      - Rendering: are new objects or functions causing a demonstrated memoization or effect problem?
-      - State updates: when based on previous state, is the functional updater used?
-      - Async lifecycle: can work complete after unmount or overwrite newer state?
+      This review may contain JavaScript, TypeScript and Vue files.
 
-  vue:
-    checks: |-
-      - Reactivity: correct use of `ref`, `reactive`, `computed`, `watch` and `watchEffect`.
-      - Component contracts: `defineProps`, `defineEmits`, slots and `v-model` remain consistent.
-      - Lifecycle: listeners, timers, watchers and pending work are cleaned up in `onUnmounted` when needed.
-      - Lists: `v-for` keys are stable and represent item identity.
-      - Vue templates automatically unwrap refs. Do not recommend adding `.value` inside template expressions.
+      Apply frontend-appropriate engineering judgment to each file. Pay
+      particular attention to:
+      - Type safety and unjustified `any`.
+      - Async handling, unhandled rejections and request races.
+      - XSS and unvalidated external input.
+      - Component lifecycle cleanup and stale state.
+      - Accessibility of the affected UI.
 
   java:
     checks: |-
-      - Resource management: streams and connections are closed with try-with-resources or an equivalent safe path.
-      - Concurrency: shared mutable state and collection usage are thread-safe where required.
-      - Exceptions: checked/unchecked handling is appropriate and exceptions retain useful context.
-      - Collections: avoid correctness or material performance problems from boxing or an unsuitable collection type.
-      - Nullability: Optional usage, nullable contracts and implicit-unboxing NPE risks.
-      - Framework annotations: transactional or async behavior is not bypassed by self-invocation or proxy boundaries.
+      This review may contain Java files.
+
+      Apply Java-appropriate engineering judgment to each file. Pay particular
+      attention to:
+      - Resource lifetime on every path.
+      - Thread safety of shared mutable state.
+      - Exception handling and lost context.
+      - Nullability contracts.
+      - Transactional and async boundaries.
 
   go:
     checks: |-
-      - Error handling: errors are checked and wrapped without losing the cause.
-      - Concurrency: goroutine leaks, channel deadlocks, sends on closed channels and panic paths.
-      - Context: deadlines and cancellation are propagated and honored.
-      - Resources: files, response bodies and connections are closed on every path.
-      - Slice aliasing: append or subslicing does not unexpectedly mutate shared backing storage.
-      - Interfaces: typed nil values cannot escape and be dereferenced unexpectedly.
+      This review may contain Go files.
 
-  automotive_cpp:
+      Apply Go-appropriate engineering judgment to each file. Pay particular
+      attention to:
+      - Error wrapping that loses the cause.
+      - Goroutine and channel lifecycle.
+      - Context deadline and cancellation propagation.
+      - Slice aliasing and unexpected shared mutation.
+      - Typed nil values.
+
+  automotive:
     checks: |-
-      - Standard compliance: MISRA C++ or AUTOSAR C++14 findings only when the exact configured standard/version is known; check whether suppressions are narrow and justified.
-      - Memory and lifetime: explicit ownership, dangling pointers, use-after-free, destruction order and bounded allocation failure paths.
-      - Resource management: classify ownership and RAII issues as `Resource Management`, not generic `API Usage`.
-      - Concurrency and interrupt context: shared-state synchronization, reentrancy, atomicity, blocking operations and long critical sections in tasks or ISRs.
-      - Undefined behavior: signed overflow, bounds errors, uninitialized data, aliasing, unsafe pointer arithmetic and type punning.
-      - Error handling: checked return values, complete cleanup and consistent diagnostic propagation.
-      - Real-time behavior: credible unbounded or unpredictable latency on critical paths, including allocation, blocking and excessive logging.
-      - Compatibility: ABI, serialized layout, enum values and externally consumed interface changes.
-      - Testability: hardware access, time and nondeterminism can be isolated when the changed behavior requires unit testing.
-      - Do not report "use modern C++" as a finding by itself. Classify the actual consequence as Bug, Memory, Resource Management, Performance or Maintainability.
+      This review may contain C, C++ and AUTOSAR ARXML files.
 
-    checks_c: |-
-      - Standard compliance: MISRA C findings only when the exact configured standard/version is known; check conversions, recursion, dynamic allocation, mutable globals, casts, unused parameters and portability where relevant.
-      - Memory and lifetime: clear pointer ownership and lifetime; no dangling pointers, out-of-bounds writes or use-after-free; allocation has a bounded failure path.
-      - Concurrency and interrupt context: correct volatile use for hardware access, correct atomicity and critical sections, and no unsafe blocking or non-reentrant calls in ISRs.
-      - Undefined behavior: signed overflow, bounds errors, uninitialized data, aliasing, unsafe pointer arithmetic, VLAs and variadic misuse.
-      - Error handling: checked return values, cleanup on every path and consistent diagnostics.
-      - Real-time behavior: credible unpredictable latency from allocation, blocking or logging on critical paths.
-      - Interface and testability: hardware, time and nondeterminism are isolated when required to test the changed behavior.
+      Apply language- and domain-appropriate engineering judgment to each file.
+      Pay particular attention to:
+      - C/C++ correctness, undefined behavior, lifetime, concurrency,
+        error handling and real-time risks.
+      - AUTOSAR model consistency, including port direction, interfaces,
+        ComSpec, data types and Runnable mappings.
+      - Cross-file consistency between ARXML definitions and C/C++ usage.
 
-    checks_autosar: |-
-      - Naming: check AR-PACKAGE, SHORT-NAME, SWC, PortPrototype, PortInterface, DataElement, Runnable and Operation names only against conventions explicitly provided in Project Context.
-      - Port semantics: check whether a port name and its `P-PORT-PROTOTYPE` or `R-PORT-PROTOTYPE` direction are consistent. Do not infer direction from the name alone.
-      - Interface consistency: check whether the referenced interface type, DataElement or Operation, ComSpec and actual data flow are mutually consistent. Apply the semantics of the specific interface type, such as Sender-Receiver or Client-Server, instead of treating every P-Port as a server or every R-Port as a client.
-      - Scope: report only issues introduced or exposed by the current diff. For generated ARXML, keep the recommendation simple: update the corresponding model or generation configuration rather than manually editing the generated file.
+      Project-specific naming rules apply only when explicitly provided in
+      Project Context.
+
+      For generated ARXML, recommend changing its source model or generation
+      configuration rather than editing the generated file directly.
