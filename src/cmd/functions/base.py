@@ -55,7 +55,7 @@ class LLMReviewFunc(BaseReviewFunc):
     """
     基于LLM的Review功能的基础类，定义了一些通用的方法和属性。
     """
-    DEFAULT_REVIEW_MAX_TOKENS = 10000
+    DEFAULT_REVIEW_MAX_TOKENS = 100000
 
     def __init__(self):
         self.client = Factory().getClient()

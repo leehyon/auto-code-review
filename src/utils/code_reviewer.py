@@ -555,7 +555,7 @@ class CodeReviewer(BaseReviewer):
             logger.info(f"从changes数据中检测到的语言: {detected_language}")
         
         # 如果超长，取前REVIEW_MAX_TOKENS个token
-        review_max_tokens = int(os.getenv("REVIEW_MAX_TOKENS", 10000))
+        review_max_tokens = int(os.getenv("REVIEW_MAX_TOKENS", 100000))
         
         # 计算tokens数量，如果超过REVIEW_MAX_TOKENS，截断changes_text
         tokens_count = count_tokens(changes_text)

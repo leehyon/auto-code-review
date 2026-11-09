@@ -625,7 +625,7 @@ SUPPORTED_EXTENSIONS=.java,.py,.php,.yml,.vue,.go,.c,.cpp,.h,.js,.css,.md,.sql,.
 
 **位置**: `src/utils/code_reviewer.py`
 
-`REVIEW_MAX_TOKENS` 控制发送给大模型的 diff 文本长度上限（默认 10000）。
+`REVIEW_MAX_TOKENS` 控制发送给大模型的 diff 文本长度上限（默认 100000）。
 超出时按顺序截断，**后面的文件会整份丢失** —— 覆盖度信息里会列出没审到的文件。
 
 #### 文件审查优先级
