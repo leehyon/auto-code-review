@@ -460,34 +460,54 @@ td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-s
   border-top: var(--hairline);
 }
 
-/* 版权署名行：团队标识和版权同一条基线，是报纸尾栏的做法 */
-.footer-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 6px 24px;
+/* 页脚：logo 在左，署名与版权在右，描述独占第二行。
+   用 grid 而不是 flex，是为了让描述行的左边缘跟「SW Team」对齐。 */
+.page-footer {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "logo team copy"
+    "logo desc desc";
+  align-items: start;
+  column-gap: 20px;
+  row-gap: 4px;
+}
+
+.footer-logo {
+  grid-area: logo;
+  /* 高度取右边两行文字（44px）的 80%，视觉上呼应但略小一号，
+     不跟文字抢注意力。原始比例 300/66，width:auto 会自动等比。
+     align-self:center 让它在这个高度下仍与文字块居中对齐。 */
+  align-self: center;
+  height: 35px;
+  width: auto;
+  object-fit: contain;
 }
 
 .footer-team {
+  grid-area: team;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--slate);
+  margin: 0;
 }
 
 .footer-copy {
+  grid-area: copy;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--gray-500);
   white-space: nowrap;
+  margin: 0;
 }
 
 .footer-desc {
+  grid-area: desc;
   color: var(--gray-500);
   font-size: 13px;
-  margin: 7px 0 0;
+  margin: 0;
   max-width: 52ch;
 }
 
@@ -506,7 +526,15 @@ td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-s
   .stat-band { grid-template-columns: 1fr; }
   h1 { font-size: 26px; }
   .stat-num { font-size: 32px; }
-  .footer-head { flex-direction: column; align-items: flex-start; }
+  .page-footer {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "logo"
+      "team"
+      "desc"
+      "copy";
+    row-gap: 8px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -646,11 +674,10 @@ td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-s
 
 
   <footer class="page-footer">
-    <div class="footer-head">
-      <span class="footer-team">SW Team</span>
-      <span class="footer-copy">© 2026 Magna Mirrors COE</span>
-    </div>
-    <p class="footer-desc">基于 AI 的自动代码审查与统计面板，帮助团队提升代码质量</p>
+    <img class="footer-logo" src="img/magna-logo.png" alt="Magna" width="300" height="66">
+    <p class="footer-team">SW Team</p>
+    <p class="footer-copy">© 2026 Magna Mirrors COE</p>
+    <p class="footer-desc">基于 AI 的自动代码审查与统计面板</p>
   </footer>
 
 </div>
