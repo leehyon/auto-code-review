@@ -151,8 +151,12 @@ class GitHubCopilotClient(BaseClient):
             return None
 
         if response.status_code != 200:
-            logger.error(f"Failed to exchange the GitHub token for a Copilot token: "
-                         f"{response.status_code} {response.text[:200]}")
+            # 交换是 best-effort：business 账号拿不到 exchange token 是常态，
+            # 客户端会回退到原始 GitHub token 继续工作。
+            # 所以这里不能打成 ERROR——那会让正常的启动看起来像故障。
+            logger.warning(f"Copilot token exchange returned "
+                           f"{response.status_code}; falling back to the original GitHub token. "
+                           f"{response.text[:200]}")
             return None
 
         try:
