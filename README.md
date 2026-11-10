@@ -248,7 +248,7 @@ python api.py
 python ui_server.py
 ```
 
-**注意**：Dashboard 前端已从 Streamlit 迁移到基于 HTML + TailwindCSS + JavaScript 的实现，前端文件位于 `web/` 目录中。`ui.py` 已废弃，请使用 `ui_server.py` 启动新的前端服务。
+**注意**：Dashboard 前端已从 Streamlit 迁移到基于 HTML + CSS + JavaScript 的实现，前端文件位于 `web/` 目录中。`ui.py` 已废弃，请使用 `ui_server.py` 启动新的前端服务。
 
 ### 方案三：systemd 常驻运行
 
@@ -526,12 +526,16 @@ BITBUCKET_REPO_CONTEXT_MAX_BYTES=20000
 
 ### Web 目录结构
 
-项目的前端 Dashboard 实现位于 `web/` 目录中，采用现代化的前端技术栈：
+项目的前端 Dashboard 实现位于 `web/` 目录中：
 
-- **技术栈**：HTML + TailwindCSS + JavaScript (原生 ES6+)
+- **技术栈**：原生 HTML + CSS + JavaScript（ES6+），**零外部依赖**
 - **文件结构**：
-  - `web/index.html` - 主页面，包含 Dashboard 的完整 UI 结构
-  - `web/app.js` - 前端逻辑，包括数据获取、图表渲染、筛选等功能
+  - `web/index.html` - 主页面，包含设计令牌、组件样式和完整 UI 结构
+  - `web/app.js` - 前端逻辑，包括数据获取、条形图渲染、筛选等功能
+
+**零外部依赖**：页面不引用任何 CDN（Tailwind、Chart.js 等一律不用）。
+样式令牌和图表渲染都写在仓库里，所以内网、公司网络、甚至断网环境下 Dashboard 都能正常打开。
+以前依赖 `cdn.tailwindcss.com`，一旦 CDN 被墙，页面会退化成没有样式的裸 HTML。
 
 ### 前端服务
 
@@ -552,9 +556,9 @@ Dashboard 由 `ui_server.py` 提供，这是一个基于 Flask 的轻量级服�
 
 新实现的优势：
 - 更轻量级，无需 Streamlit 依赖
-- 更快的加载速度
-- 更好的用户体验和界面设计
-- 更容易自定义和扩展
+- 零外部依赖，内网 / 断网也能正常打开
+- 更快的加载速度（没有 CDN 请求）
+- 更容易自定义和扩展（样式令牌集中在 `web/index.html` 顶部的 `:root`）
 
 ## 配置说明
 
