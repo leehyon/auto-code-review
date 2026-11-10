@@ -73,13 +73,13 @@ function switchTab(tab) {
 // 按审查类型切换表头
 function applyTableHeaders() {
     const branchHeader = document.getElementById('branchHeader');
-    const targetHeader = document.getElementById('targetBranchHeader');
+    const urlHeader = document.getElementById('urlHeader');
     if (currentReviewType === 'push') {
         branchHeader.textContent = '分支';
-        targetHeader.style.display = 'none';
+        urlHeader.style.display = 'none';
     } else {
         branchHeader.textContent = '源分支';
-        targetHeader.style.display = '';
+        urlHeader.style.display = '';
     }
 }
 
@@ -181,30 +181,24 @@ function renderTable(data) {
         const level = score >= 80 ? 'good' : (score >= 60 ? 'mid' : 'bad');
 
         const sourceBranch = item.source_branch || item.branch || '';
-        const targetBranch = item.target_branch || '';
 
         let row = `
             <tr>
                 <td class="mono nowrap">${escapeHtml(item.project_name || '')}</td>
                 <td class="author nowrap">${escapeHtml(item.author || '')}</td>
                 <td class="mono branch" title="${escapeHtml(sourceBranch)}">${escapeHtml(sourceBranch)}</td>
-        `;
-
-        if (currentReviewType === 'mr') {
-            row += `<td class="mono muted branch" title="${escapeHtml(targetBranch)}">${escapeHtml(targetBranch)}</td>`;
-        }
-
-        const commitText = escapeHtml(item.commit_messages || '');
-        const commitCell = (currentReviewType === 'mr' && item.url)
-            ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="commit-link" title="${commitText}">${commitText}</a>`
-            : `<span title="${commitText}">${commitText}</span>`;
-
-        row += `
                 <td class="muted nowrap">${escapeHtml(item.updated_at || '')}</td>
-                <td class="commit">${commitCell}</td>
+                <td class="commit" title="${escapeHtml(item.commit_messages || '')}">${escapeHtml(item.commit_messages || '')}</td>
                 <td class="mono nowrap">${escapeHtml(item.delta || '')}</td>
                 <td class="nowrap"><span class="score"><span class="dot ${level}"></span>${score.toFixed(1)}</span></td>
         `;
+
+        if (currentReviewType === 'mr') {
+            const url = item.url || '';
+            row += url
+                ? `<td class="nowrap"><a href="${escapeHtml(url)}" target="_blank" rel="noopener" class="pr-link">${prLabel(url)}</a></td>`
+                : '<td></td>';
+        }
 
         row += '</tr>';
         return row;
@@ -346,6 +340,23 @@ function resetFilters() {
     applyTableHeaders();
 
     loadFilterOptions().then(() => loadData());
+}
+
+// 从 PR URL 里提取编号，各平台路径都兼容：
+//   Bitbucket  .../pull-requests/29/overview
+//   GitHub     .../pull/29
+//   GitLab     .../merge_requests/29
+//   Gitea      .../pulls/29
+function extractPrNumber(url) {
+    if (!url) return null;
+    const match = url.match(/\/(\d+)(?:\/[^/?#]*)?(?:[?#]|$)/);
+    return match ? match[1] : null;
+}
+
+// 链接列的显示文本
+function prLabel(url) {
+    const number = extractPrNumber(url);
+    return number ? `#${number}` : '查看 →';
 }
 
 // HTML 转义

@@ -333,10 +333,16 @@ td.muted { color: var(--gray-500); font-size: 12px; }
 td.author { color: var(--gray-700); }
 td.commit { color: var(--slate); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 提交信息即 PR 身份，链接挂在这里，不另开一列 */
-.commit-link { color: var(--clay); text-decoration: none; border-bottom: 1px dotted transparent; }
-.commit-link:hover { border-bottom-color: var(--clay); }
-td.commit span { color: var(--slate); }
+/* PR 链接列：编号用 mono，像报刊的交叉引用 */
+.pr-link {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--clay);
+  text-decoration: none;
+  border-bottom: 1px dotted transparent;
+  white-space: nowrap;
+}
+.pr-link:hover { border-bottom-color: var(--clay); }
 
 /* 这些列不折行：折行会让一眼扫读变成逐行确认 */
 td.nowrap { white-space: nowrap; }
@@ -590,11 +596,11 @@ td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-s
               <th>项目</th>
               <th>作者</th>
               <th id="branchHeader">源分支</th>
-              <th id="targetBranchHeader">目标分支</th>
               <th>更新时间</th>
               <th>提交信息</th>
               <th>代码变更</th>
               <th>分数</th>
+              <th id="urlHeader">链接</th>
             </tr>
           </thead>
           <tbody id="dataTableBody">
