@@ -190,6 +190,21 @@ class PushHandler:
         self.branch_name = self.webhook_data.get('ref', '').replace('refs/heads/', '')
         self.commit_list = self.webhook_data.get('commits', [])
 
+    @property
+    def push_url(self) -> str:
+        """本次推送 head commit 的浏览器链接（用于 Dashboard 的提交链接列）。
+
+        GitLab push payload 的 checkout_url 就是 head commit 的 web URL；
+        缺失时回退到最后一个 commit 的 url（同样是 web 地址）。
+        """
+        checkout_url = self.webhook_data.get('checkout_url') or ''
+        if checkout_url:
+            return checkout_url
+        commits = self.commit_list or []
+        if commits:
+            return commits[-1].get('url') or ''
+        return ''
+
     def get_push_commits(self) -> list:
         # 检查是否为 Push 事件
         if self.event_type != 'push':

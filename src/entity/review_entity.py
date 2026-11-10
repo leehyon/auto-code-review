@@ -24,7 +24,8 @@ class MergeRequestReviewEntity:
 
 class PushReviewEntity:
     def __init__(self, project_name: str, author: str, branch: str, updated_at: int, commits: list, score: float,
-                 review_result: str, url_slug: str, webhook_data: dict, additions: int, deletions: int):
+                 review_result: str, url_slug: str, webhook_data: dict, additions: int, deletions: int,
+                 url: str = ''):
         self.project_name = project_name
         self.author = author
         self.branch = branch
@@ -36,6 +37,8 @@ class PushReviewEntity:
         self.webhook_data = webhook_data
         self.additions = additions
         self.deletions = deletions
+        # 本次推送 head commit 的浏览器链接（Dashboard 的提交链接列用）
+        self.url = url
 
     @property
     def commit_messages(self):

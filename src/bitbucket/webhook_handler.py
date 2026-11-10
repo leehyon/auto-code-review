@@ -837,6 +837,18 @@ class PushHandler:
             branch_changes.append(change)
         return branch_changes
 
+    @property
+    def push_url(self) -> str:
+        """本次推送 head commit 的浏览器链接（用于 Dashboard 的提交链接列）。
+
+        toHash 就是被推送分支的 head commit。
+        """
+        for change in self._branch_changes():
+            to_hash = change.get('toHash')
+            if to_hash:
+                return self._build_commit_url(to_hash)
+        return ''
+
     def _build_commit_url(self, commit_id: str) -> str:
         if not commit_id:
             return ''

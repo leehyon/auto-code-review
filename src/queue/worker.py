@@ -60,6 +60,7 @@ def handle_push_event(webhook_data: dict, gitlab_token: str, gitlab_url: str, gi
             webhook_data=webhook_data,
             additions=additions,
             deletions=deletions,
+            url=handler.push_url,
         ))
 
     except Exception as e:
@@ -197,6 +198,7 @@ def handle_github_push_event(webhook_data: dict, github_token: str, github_url: 
             webhook_data=webhook_data,
             additions=additions,
             deletions=deletions,
+            url=handler.push_url,
         ))
 
     except Exception as e:
@@ -372,6 +374,7 @@ def handle_gitea_push_event(webhook_data: dict, gitea_token: str, gitea_url: str
             webhook_data=webhook_data,
             additions=additions,
             deletions=deletions,
+            url=handler.push_url,
         ))
 
     except Exception as e:
@@ -659,6 +662,7 @@ def handle_bitbucket_push_event(webhook_data: dict, bitbucket_token: str, bitbuc
             webhook_data=webhook_data,
             additions=additions,
             deletions=deletions,
+            url=handler.push_url,
         ))
 
     except Exception as e:

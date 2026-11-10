@@ -81,6 +81,21 @@ class PushHandler:
         
         self.branch_name = self.webhook_data.get('ref', '').replace('refs/heads/', '')
         self.commit_list = self.webhook_data.get('commits', [])
+        self.repo_html_url = (repository.get('html_url') or '').rstrip('/')
+
+    @property
+    def push_url(self) -> str:
+        """本次推送 head commit 的浏览器链接（用于 Dashboard 的提交链接列）。
+
+        payload 里的 commits[].url 是 api/v1 地址，浏览器打不开，
+        所以用 repository.html_url + head commit sha 自己拼。
+        """
+        head_commit = self.webhook_data.get('head_commit') or {}
+        sha = self.webhook_data.get('after') or head_commit.get('id') or ''
+        html_url = getattr(self, 'repo_html_url', '')
+        if not sha or not html_url:
+            return ''
+        return f"{html_url}/commit/{sha}"
 
     def get_push_commits(self) -> list:
         # 检查是否为 Push 事件

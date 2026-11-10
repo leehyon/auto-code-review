@@ -212,9 +212,25 @@ class PushHandler:
 
     def parse_push_event(self):
         # 提取 Push 事件的相关参数
-        self.repo_full_name = self.webhook_data.get('repository', {}).get('full_name')
+        repository = self.webhook_data.get('repository', {}) or {}
+        self.repo_full_name = repository.get('full_name')
+        self.repo_html_url = (repository.get('html_url') or '').rstrip('/')
         self.branch_name = self.webhook_data.get('ref', '').replace('refs/heads/', '')
         self.commit_list = self.webhook_data.get('commits', [])
+
+    @property
+    def push_url(self) -> str:
+        """本次推送 head commit 的浏览器链接（用于 Dashboard 的提交链接列）。
+
+        payload 里的 commits[].url 是 api.github.com 地址，浏览器打不开，
+        所以用 repository.html_url + head commit sha 自己拼。
+        """
+        head_commit = self.webhook_data.get('head_commit') or {}
+        sha = head_commit.get('id') or self.webhook_data.get('after') or ''
+        html_url = getattr(self, 'repo_html_url', '')
+        if not sha or not html_url:
+            return ''
+        return f"{html_url}/commit/{sha}"
 
     def get_push_commits(self) -> list:
         # 检查是否为 Push 事件

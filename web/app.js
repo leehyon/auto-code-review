@@ -76,10 +76,10 @@ function applyTableHeaders() {
     const urlHeader = document.getElementById('urlHeader');
     if (currentReviewType === 'push') {
         branchHeader.textContent = '分支';
-        urlHeader.style.display = 'none';
+        urlHeader.textContent = '提交';
     } else {
         branchHeader.textContent = '源分支';
-        urlHeader.style.display = '';
+        urlHeader.textContent = '链接';
     }
 }
 
@@ -124,7 +124,7 @@ function buildParams(filters) {
 // 加载数据
 async function loadData() {
     const tbody = document.getElementById('dataTableBody');
-    const colCount = currentReviewType === 'push' ? 7 : 8;
+    const colCount = 8;
     try {
         const filters = readFilters();
         const params = buildParams(filters);
@@ -171,7 +171,7 @@ function renderTable(data) {
     applyTableHeaders();
 
     if (data.length === 0) {
-        const colCount = currentReviewType === 'push' ? 7 : 8;
+        const colCount = 8;
         tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">当前筛选条件下没有记录</td></tr>`;
         return;
     }
@@ -193,12 +193,10 @@ function renderTable(data) {
                 <td class="nowrap"><span class="score"><span class="dot ${level}"></span>${score.toFixed(1)}</span></td>
         `;
 
-        if (currentReviewType === 'mr') {
-            const url = item.url || '';
-            row += url
-                ? `<td class="nowrap"><a href="${escapeHtml(url)}" target="_blank" rel="noopener" class="pr-link">${prLabel(url)}</a></td>`
-                : '<td></td>';
-        }
+        const url = item.url || '';
+        row += url
+            ? `<td class="nowrap"><a href="${escapeHtml(url)}" target="_blank" rel="noopener" class="pr-link">${linkLabel(url, currentReviewType)}</a></td>`
+            : '<td></td>';
 
         row += '</tr>';
         return row;
@@ -354,7 +352,14 @@ function extractPrNumber(url) {
 }
 
 // 链接列的显示文本
-function prLabel(url) {
+//   Merge Request -> #29
+//   Push          -> commit 短 hash，例如 a1b2c3d
+function linkLabel(url, reviewType) {
+    if (reviewType === 'push') {
+        const parts = url.split('/');
+        const sha = (parts[parts.length - 1] || '').split('?')[0];
+        return sha ? sha.slice(0, 7) : '查看 →';
+    }
     const number = extractPrNumber(url);
     return number ? `#${number}` : '查看 →';
 }

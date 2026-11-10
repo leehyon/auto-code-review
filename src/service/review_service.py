@@ -64,6 +64,7 @@ class ReviewService:
                         review_result LONGTEXT,
                         additions INT DEFAULT 0,
                         deletions INT DEFAULT 0,
+                        url TEXT,
                         INDEX idx_author (author),
                         INDEX idx_project_name (project_name),
                         INDEX idx_updated_at (updated_at)
@@ -81,7 +82,8 @@ class ReviewService:
                         score INTEGER,
                         review_result TEXT,
                         additions INTEGER DEFAULT 0,
-                        deletions INTEGER DEFAULT 0
+                        deletions INTEGER DEFAULT 0,
+                        url TEXT
                     )
                 '''
         return ""
@@ -97,14 +99,23 @@ class ReviewService:
                 # 创建push_review_log表
                 conn.execute(ReviewService._get_create_table_sql("push_review_log"))
 
-                # 确保旧版本的表添加additions、deletions列（仅SQLite需要，MySQL在创建时已包含）
-                if DatabaseFactory.is_sqlite():
-                    tables = ["mr_review_log", "push_review_log"]
-                    columns = ["additions", "deletions"]
-                    for table in tables:
-                        for column in columns:
-                            if not conn.column_exists(table, column):
-                                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} INTEGER DEFAULT 0")
+                # 为旧版本的表补齐新增的列。
+                # 新建的表已经带上这些列；已存在的表（SQLite 和 MySQL 都可能）需要 ALTER 一次。
+                table_columns = {
+                    "mr_review_log": [
+                        ("additions", "INTEGER DEFAULT 0"),
+                        ("deletions", "INTEGER DEFAULT 0"),
+                    ],
+                    "push_review_log": [
+                        ("additions", "INTEGER DEFAULT 0"),
+                        ("deletions", "INTEGER DEFAULT 0"),
+                        ("url", "TEXT"),
+                    ],
+                }
+                for table, columns in table_columns.items():
+                    for column, ddl in columns:
+                        if not conn.column_exists(table, column):
+                            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
                 conn.commit()
                 print(f"Database initialized successfully using {DatabaseFactory.get_db_type()}")
@@ -178,11 +189,12 @@ class ReviewService:
         try:
             with get_db_connection() as conn:
                 conn.execute('''
-                    INSERT INTO push_review_log (project_name, author, branch, updated_at, commit_messages, score, review_result, additions, deletions)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO push_review_log (project_name, author, branch, updated_at, commit_messages, score, review_result, additions, deletions, url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (entity.project_name, entity.author, entity.branch,
                       entity.updated_at, entity.commit_messages, entity.score,
-                      entity.review_result, entity.additions, entity.deletions))
+                      entity.review_result, entity.additions, entity.deletions,
+                      entity.url))
                 conn.commit()
                 print(f"[ReviewService] Push review log inserted successfully: {entity.project_name} by {entity.author}")
         except Exception as e:
@@ -197,7 +209,7 @@ class ReviewService:
         try:
             with get_db_connection() as conn:
                 query = """
-                    SELECT project_name, author, branch, updated_at, commit_messages, score, review_result, additions, deletions
+                    SELECT project_name, author, branch, updated_at, commit_messages, score, review_result, additions, deletions, url
                     FROM push_review_log
                     WHERE 1=1
                 """

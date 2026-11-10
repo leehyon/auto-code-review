@@ -32,7 +32,7 @@ class ReviewLogFilterTest(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_name TEXT, author TEXT, branch TEXT, updated_at INTEGER,
                 commit_messages TEXT, score INTEGER, review_result TEXT,
-                additions INTEGER, deletions INTEGER);
+                additions INTEGER, deletions INTEGER, url TEXT);
         """)
         con.executemany(
             "INSERT INTO mr_review_log (project_name, author, source_branch, target_branch,"
