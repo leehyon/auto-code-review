@@ -460,15 +460,18 @@ td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-s
   border-top: var(--hairline);
 }
 
-/* 页脚：logo 在左，署名与版权在右，描述独占第二行。
-   用 grid 而不是 flex，是为了让描述行的左边缘跟「SW Team」对齐。 */
+/* 页脚：logo 在左并跨两行，署名和描述在中间，版权在右下角。
+   用 grid 而不是 flex，是为了让描述行的左边缘跟「SW Team」对齐，
+   并让版权跟描述共用一条基线——版权是「最后一行」的元素，
+   放在顶部会跟 SW TEAM 看成平级，而它们并不是平级关系。
+   align-items:baseline 让同一行里的文字按基线对齐，而不是按顶边。 */
 .page-footer {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-areas:
-    "logo team copy"
-    "logo desc desc";
-  align-items: start;
+    "logo team ."
+    "logo desc copy";
+  align-items: baseline;
   column-gap: 20px;
   row-gap: 4px;
 }
