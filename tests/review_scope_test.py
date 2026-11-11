@@ -336,10 +336,14 @@ class RepoContextReadTest(unittest.TestCase):
 
     def test_auto_discovery_probes_root_candidates(self):
         """自动发现会探测一组常见约定名，而不是只认 AGENTS.md。"""
-        from src.bitbucket.webhook_handler import DEFAULT_REPO_CONTEXT_FILES
-        self.assertIn('AGENTS.md', DEFAULT_REPO_CONTEXT_FILES)
-        self.assertIn('CONTRIBUTING.md', DEFAULT_REPO_CONTEXT_FILES)
-        self.assertIn('.github/copilot-instructions.md', DEFAULT_REPO_CONTEXT_FILES)
+        from src.bitbucket.webhook_handler import (
+            DEFAULT_REPO_CONTEXT_FILES_TIER1,
+            DEFAULT_REPO_CONTEXT_FILES_TIER2,
+        )
+        self.assertIn('AGENTS.md', DEFAULT_REPO_CONTEXT_FILES_TIER1)
+        self.assertIn('.github/copilot-instructions.md', DEFAULT_REPO_CONTEXT_FILES_TIER1)
+        self.assertIn('CONTRIBUTING.md', DEFAULT_REPO_CONTEXT_FILES_TIER2)
+        self.assertIn('README.md', DEFAULT_REPO_CONTEXT_FILES_TIER2)
 
         requested = []
 
@@ -352,8 +356,31 @@ class RepoContextReadTest(unittest.TestCase):
                 patch('src.bitbucket.webhook_handler.BitbucketClient.get_file_content',
                       side_effect=side_effect):
             self.assertEqual(self._handler().get_repo_context(), '')
-        self.assertEqual(len(requested), len(DEFAULT_REPO_CONTEXT_FILES))
+        # 两层清单都会被探测到
+        self.assertEqual(len(requested),
+                         len(DEFAULT_REPO_CONTEXT_FILES_TIER1) + len(DEFAULT_REPO_CONTEXT_FILES_TIER2))
         self.assertTrue(all('/raw/' in p for p in requested))
+
+    def test_auto_discovery_stops_at_first_hit(self):
+        """自动发现时只读第一个命中的文件——AGENTS.md 和 CLAUDE.md 互为替代，
+        全读一遍纯属浪费上下文。"""
+        requested = []
+
+        def side_effect(path, ref=None):
+            requested.append(path)
+            if path.endswith('/raw/AGENTS.md'):
+                return '端口必须用 P_ 前缀'
+            return None
+
+        env = {'BITBUCKET_REPO_CONTEXT_FILES': '', 'BITBUCKET_REPO_CONTEXT_PROJECT_FILES': ''}
+        with patch.dict(os.environ, env, clear=False), \
+                patch('src.bitbucket.webhook_handler.BitbucketClient.get_file_content',
+                      side_effect=side_effect):
+            ctx = self._handler().get_repo_context()
+
+        self.assertIn('### AGENTS.md', ctx)
+        self.assertEqual(len(requested), 1, '命中 AGENTS.md 后不该再探测其他文件')
+        self.assertNotIn('README.md', ctx)
 
     def test_explicit_config_overrides_auto_discovery(self):
         """显式配置时只读指定文件，不再探测自动发现清单。"""

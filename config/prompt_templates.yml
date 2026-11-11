@@ -24,6 +24,9 @@ base_review_prompt:
     Rules
     --------------------------
     - Review only the changes provided below.
+    - The conventions listed under Project Context are binding for this review.
+      Report a violation as an issue only when the diff clearly contradicts
+      them, and name the specific rule the code breaks.
     - Report only real, evidence-based issues. Do not speculate.
     - Tie every finding to specific code lines or a diff snippet.
     - Prefer fewer findings over inventing issues to fill the format.

@@ -93,17 +93,27 @@ def verify_webhook_signature(raw_body: bytes, signature: str, secret: str) -> bo
     return True
 
 
-# 默认从仓库根目录自动发现的约定文件（按价值排序，命中即读，受字节预算限制）。
-# 多个项目不需要逐个配置；用 BITBUCKET_REPO_CONTEXT_FILES 可以覆盖成指定文件。
-DEFAULT_REPO_CONTEXT_FILES = [
+# 自动发现的约定文件，分两层：
+#
+# Tier 1 是明确的“约定文件”信号，彼此互为替代，所以只读**第一个命中的**。
+# Tier 2 是弱信号（README / CONTRIBUTING），只有 Tier 1 全都没有时才读，
+# 而且同样只读第一个——README 通常很长，多半是安装步骤和徽章，
+# 对代码审查没价值，却每次审查都要占上下文。
+#
+# 想要别的文件顺序，显式配 BITBUCKET_REPO_CONTEXT_FILES；
+# 想给单个项目指定别的位置，用 BITBUCKET_REPO_CONTEXT_PROJECT_FILES。
+DEFAULT_REPO_CONTEXT_FILES_TIER1 = [
     'AGENTS.md',
     'CLAUDE.md',
-    'CONTRIBUTING.md',
     '.github/copilot-instructions.md',
     '.cursorrules',
     '.clinerules',
     '.windsurfrules',
     'GEMINI.md',
+]
+
+DEFAULT_REPO_CONTEXT_FILES_TIER2 = [
+    'CONTRIBUTING.md',
     'README.md',
 ]
 
@@ -624,13 +634,78 @@ class PullRequestHandler:
             return ''
         return f"{self.client.base_url}/projects/{self.project_key}/repos/{self.repository_slug}/commits/{commit_id}"
 
+    def _read_context_file(self, rel: str, max_lines: int, max_bytes: int) -> tuple:
+        """读取单个约定文件，返回 (文本, 字节数)。读不到返回 (None, 0)。"""
+        try:
+            content = self.client.get_file_content(
+                f"/projects/{self.project_key}/repos/{self.repository_slug}/raw/{rel}",
+                ref=self.target_branch or None)
+        except Exception as e:
+            logger.warning(f"Failed to read repo context file {rel}: {e}")
+            return None, 0
+        if not content:
+            return None, 0
+
+        lines = content.splitlines()
+        truncated = len(lines) > max_lines
+        lines = lines[:max_lines]
+        text = '\n'.join(lines)
+        encoded = text.encode('utf-8')
+        if len(encoded) > max_bytes:
+            text = encoded[:max_bytes].decode('utf-8', 'ignore')
+            truncated = True
+        note = '（内容过长，已截断）' if truncated else ''
+        return f"### {rel}{note}\n{text}", len(text.encode('utf-8'))
+
+    def _resolve_context_files(self) -> tuple:
+        """决定这次要读哪些约定文件。
+
+        返回 (文件清单, 是否自动发现)：
+        - 自动发现时只取第一个命中的（见 DEFAULT_REPO_CONTEXT_FILES_TIER1/2 的说明）
+        - 显式配置的清单则全部读取——那是配置者的明确意图
+
+        优先级：按项目指定 > 全局清单 > 自动发现。
+        """
+        # 按项目指定：格式 PROJECT_KEY:path1,path2;PROJECT_KEY2:path3
+        raw_overrides = os.getenv('BITBUCKET_REPO_CONTEXT_PROJECT_FILES', '').strip()
+        if raw_overrides:
+            for entry in raw_overrides.split(';'):
+                entry = entry.strip()
+                if not entry or ':' not in entry:
+                    continue
+                key, _, paths = entry.partition(':')
+                if key.strip().upper() != (self.project_key or '').upper():
+                    continue
+                files = [p.strip() for p in paths.split(',') if p.strip()]
+                if files:
+                    logger.info(f"Repo context files for project {self.project_key}: {files}")
+                    return files, False
+
+        # 全局清单
+        configured = [f.strip() for f in
+                      os.getenv('BITBUCKET_REPO_CONTEXT_FILES', '').split(',') if f.strip()]
+        if configured:
+            return configured, False
+
+        return None, True
+
     def get_repo_context(self) -> str:
         """
         读取仓库级指令文件，有界地返回文本。
 
-        **默认从仓库根目录自动发现**常见约定文件（AGENTS.md、CONTRIBUTING.md 等），
-        所以多个项目不需要逐个配置；配置 ``BITBUCKET_REPO_CONTEXT_FILES`` 则改为
-        只读指定的文件（用于覆盖自动发现的清单）。
+        **默认从仓库根目录自动发现**常见约定文件（AGENTS.md 等），不需要逐个项目配置。
+        三个环境变量可以覆盖行为：
+
+        - ``BITBUCKET_REPO_CONTEXT_ENABLED=0``
+          完全关闭：不发任何请求，也不占任何上下文。
+        - ``BITBUCKET_REPO_CONTEXT_FILES``
+          指定所有项目默认读哪些文件（逗号分隔），留空则自动发现。
+        - ``BITBUCKET_REPO_CONTEXT_PROJECT_FILES``
+          给单个项目指定别的规则位置，格式 ``PROJECT_KEY:path1,path2``，
+          多个项目用分号分隔。命中时优先于全局清单。
+
+        自动发现时只读**第一个命中的**文件：AGENTS.md / CLAUDE.md 这类彼此互为替代，
+        全读一遍纯属浪费上下文；README 排到最后，只有在前面的都没有时才读。
 
         文件从 PR 的**目标分支**读取：约定文件应该是稳定的，源分支的内容由提交者
         控制，不适合作为审查依据。
@@ -638,14 +713,9 @@ class PullRequestHandler:
         读取失败（文件不存在、权限不足、网络问题）都跳过——拿不到仓库约定
         不应该让整个审查失败。
         """
-        override = [f.strip() for f in
-                    os.getenv('BITBUCKET_REPO_CONTEXT_FILES', '').split(',') if f.strip()]
-        if override:
-            files = override
-            auto_discovered = False
-        else:
-            files = list(DEFAULT_REPO_CONTEXT_FILES)
-            auto_discovered = True
+        if os.getenv('BITBUCKET_REPO_CONTEXT_ENABLED', '1').strip().lower() in ('0', 'false', 'no'):
+            logger.info("Repo context is disabled by configuration.")
+            return ""
 
         try:
             max_lines = int(os.getenv('BITBUCKET_REPO_CONTEXT_MAX_LINES', '200'))
@@ -653,38 +723,38 @@ class PullRequestHandler:
         except ValueError:
             max_lines, max_bytes = 200, 20000
 
+        files, auto_discovered = self._resolve_context_files()
+
         blocks = []
         used_bytes = 0
         found = []
-        for rel in files:
-            if used_bytes >= max_bytes:
-                break
-            try:
-                content = self.client.get_file_content(
-                    f"/projects/{self.project_key}/repos/{self.repository_slug}/raw/{rel}",
-                    ref=self.target_branch or None)
-            except Exception as e:
-                logger.warning(f"Failed to read repo context file {rel}: {e}")
-                continue
-            if not content:
-                if not auto_discovered:
+
+        if auto_discovered:
+            # 两层，每层只取第一个命中的；上一层命中了就不再往下探
+            for tier in (DEFAULT_REPO_CONTEXT_FILES_TIER1, DEFAULT_REPO_CONTEXT_FILES_TIER2):
+                if found:
+                    break
+                for rel in tier:
+                    if used_bytes >= max_bytes:
+                        break
+                    text, size = self._read_context_file(rel, max_lines, max_bytes)
+                    if text is None:
+                        continue
+                    found.append(rel)
+                    blocks.append(text)
+                    used_bytes += size
+                    break
+        else:
+            for rel in files:
+                if used_bytes >= max_bytes:
+                    break
+                text, size = self._read_context_file(rel, max_lines, max_bytes)
+                if text is None:
                     logger.warning(f"Repo context file not found: {rel}")
-                continue
-            found.append(rel)
-
-            lines = content.splitlines()
-            truncated = len(lines) > max_lines
-            lines = lines[:max_lines]
-            text = '\n'.join(lines)
-            remaining = max_bytes - used_bytes
-            encoded = text.encode('utf-8')
-            if len(encoded) > remaining:
-                text = encoded[:remaining].decode('utf-8', 'ignore')
-                truncated = True
-            used_bytes += len(text.encode('utf-8'))
-
-            note = '（内容过长，已截断）' if truncated else ''
-            blocks.append(f"### {rel}{note}\n{text}")
+                    continue
+                found.append(rel)
+                blocks.append(text)
+                used_bytes += size
 
         if blocks:
             logger.info(f"Repo context loaded from {found} "
