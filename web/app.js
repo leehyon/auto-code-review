@@ -2,18 +2,26 @@
 let currentData = [];
 let currentReviewType = 'mr';
 
+// 默认筛选范围：最近 30 天
+const DEFAULT_RANGE_DAYS = 30;
+
+// 返回默认的起止日期
+function defaultDateRange() {
+    const end = new Date();
+    const start = new Date(end);
+    start.setDate(start.getDate() - DEFAULT_RANGE_DAYS);
+    return { start, end };
+}
+
 // 初始化
 document.addEventListener('DOMContentLoaded', function() {
     // 先定语言：静态文案要立刻换成对应语言，再加载数据
     initLanguage();
 
     // 设置默认日期
-    const today = new Date();
-    const sevenDaysAgo = new Date(today);
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-    document.getElementById('startDate').value = formatDate(sevenDaysAgo);
-    document.getElementById('endDate').value = formatDate(today);
+    const range = defaultDateRange();
+    document.getElementById('startDate').value = formatDate(range.start);
+    document.getElementById('endDate').value = formatDate(range.end);
 
     // 监听审查类型变化
     document.querySelectorAll('input[name="reviewType"]').forEach(radio => {
@@ -411,12 +419,10 @@ function onLanguageChanged() {
 
 // 重置筛选器
 function resetFilters() {
-    const today = new Date();
-    const sevenDaysAgo = new Date(today);
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const range = defaultDateRange();
 
-    document.getElementById('startDate').value = formatDate(sevenDaysAgo);
-    document.getElementById('endDate').value = formatDate(today);
+    document.getElementById('startDate').value = formatDate(range.start);
+    document.getElementById('endDate').value = formatDate(range.end);
     document.getElementById('authors').value = '';
     document.getElementById('projectNames').value = '';
     document.getElementById('typeMr').checked = true;
