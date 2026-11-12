@@ -203,9 +203,11 @@ class ReviewService:
                     params.extend(authors)
 
                 if project_names:
+                    # 项目名统一小写存储，筛选也按小写比较，
+                    # 免得前端传了大写就查不到记录
                     placeholders = ','.join([ph] * len(project_names))
-                    query += f" AND project_name IN ({placeholders})"
-                    params.extend(project_names)
+                    query += f" AND LOWER(project_name) IN ({placeholders})"
+                    params.extend([p.lower() for p in project_names])
 
                 if updated_at_gte is not None:
                     query += f" AND updated_at >= {ph}"
@@ -400,9 +402,11 @@ class ReviewService:
                     params.extend(authors)
 
                 if project_names:
+                    # 项目名统一小写存储，筛选也按小写比较，
+                    # 免得前端传了大写就查不到记录
                     placeholders = ','.join([ph] * len(project_names))
-                    query += f" AND project_name IN ({placeholders})"
-                    params.extend(project_names)
+                    query += f" AND LOWER(project_name) IN ({placeholders})"
+                    params.extend([p.lower() for p in project_names])
 
                 if updated_at_gte is not None:
                     query += f" AND updated_at >= {ph}"

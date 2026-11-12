@@ -105,6 +105,35 @@ h1 {
 .pill-key { font-family: var(--sans); }
 #lastUpdate { font-family: var(--mono); }
 
+/* header 右侧：语言切换 + 最后更新时间 */
+.header-tools {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+/* 语言切换：小药丸 segmented 控件 */
+.lang-switch {
+  display: inline-flex;
+  border: 1.5px solid var(--gray-300);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--white);
+}
+.lang-btn {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  color: var(--gray-500);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.lang-btn:hover { color: var(--slate); }
+.lang-btn.active { background: var(--slate); color: var(--white); }
+
 /* ============================================================
    区块
    ============================================================ */
@@ -345,7 +374,7 @@ tbody tr:hover { background: var(--ivory); }
 td.mono { font-family: var(--mono); font-size: 12px; }
 td.muted { color: var(--gray-500); font-size: 12px; }
 td.author { color: var(--gray-700); }
-td.commit { color: var(--slate); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+td.commit { color: var(--slate); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* PR 链接列：编号用 mono，像报刊的交叉引用 */
 .pr-link {
@@ -360,7 +389,7 @@ td.commit { color: var(--slate); max-width: 280px; overflow: hidden; text-overfl
 
 /* 这些列不折行：折行会让一眼扫读变成逐行确认 */
 td.nowrap { white-space: nowrap; }
-td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+td.branch { max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .score { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 13px; }
 
@@ -632,9 +661,15 @@ td.action-cell::before, th.action-col::before {
     <div class="header-top">
       <div class="title-block">
         <h1>Code Review</h1>
-        <p class="subtitle">Merge Request 与 Push 的自动审查记录</p>
+        <p class="subtitle" data-i18n="meta.subtitle">Merge Request 与 Push 的自动审查记录</p>
       </div>
-      <span class="pill"><span class="pill-key">最后更新</span><span id="lastUpdate">—</span></span>
+      <div class="header-tools">
+        <span class="pill"><span class="pill-key" data-i18n="header.lastUpdated">最后更新</span><span id="lastUpdate">—</span></span>
+        <div class="lang-switch" role="group" aria-label="Language" data-i18n-aria="lang.label">
+          <button type="button" class="lang-btn" data-lang-btn="zh" onclick="setLanguage('zh')">中文</button>
+          <button type="button" class="lang-btn" data-lang-btn="en" onclick="setLanguage('en')">EN</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -642,31 +677,31 @@ td.action-cell::before, th.action-col::before {
   <section class="filters">
     <div class="filter-grid">
       <div>
-        <label class="field-label" for="startDate">开始日期</label>
+        <label class="field-label" for="startDate" data-i18n="filter.startDate">开始日期</label>
         <input type="date" id="startDate">
       </div>
       <div>
-        <label class="field-label" for="endDate">结束日期</label>
+        <label class="field-label" for="endDate" data-i18n="filter.endDate">结束日期</label>
         <input type="date" id="endDate">
       </div>
       <div>
-        <label class="field-label" for="authors">作者</label>
-        <select id="authors"><option value="">全部</option></select>
+        <label class="field-label" for="authors" data-i18n="filter.author">作者</label>
+        <select id="authors"><option value="" data-i18n="filter.all">全部</option></select>
       </div>
       <div>
-        <label class="field-label" for="projectNames">项目</label>
-        <select id="projectNames"><option value="">全部</option></select>
+        <label class="field-label" for="projectNames" data-i18n="filter.project">项目</label>
+        <select id="projectNames"><option value="" data-i18n="filter.all">全部</option></select>
       </div>
     </div>
 
     <div class="filter-actions">
-      <div class="segmented" role="radiogroup" aria-label="审查类型">
+      <div class="segmented" role="radiogroup" aria-label="审查类型" data-i18n-aria="filter.type">
         <label><input type="radio" id="typeMr" name="reviewType" value="mr" checked> Merge Request</label>
         <label><input type="radio" id="typePush" name="reviewType" value="push"> Push</label>
       </div>
       <div class="buttons">
-        <button class="btn primary" onclick="loadData()">查询</button>
-        <button class="btn" onclick="resetFilters()">重置</button>
+        <button class="btn primary" onclick="loadData()" data-i18n="filter.query">查询</button>
+        <button class="btn" onclick="resetFilters()" data-i18n="filter.reset">重置</button>
       </div>
     </div>
 
@@ -678,20 +713,20 @@ td.action-cell::before, th.action-col::before {
     <div class="stat-band">
       <div class="stat-card">
         <span class="stat-num" id="totalRecords">0</span>
-        <span class="stat-label">审查记录</span>
+        <span class="stat-label" data-i18n="stat.records">审查记录</span>
       </div>
       <div class="stat-card" id="averageScoreCard">
         <span class="stat-num" id="averageScore">0.00</span>
-        <span class="stat-label">平均分数</span>
+        <span class="stat-label" data-i18n="stat.average">平均分数</span>
       </div>
       <div class="stat-card clickable" id="failedCard" onclick="toggleFailedFilter()"
-           title="点击只看失败的审查（有重试入口的行）">
+           title="点击只看失败的审查（有重试入口的行）" data-i18n-title="stat.failedHint">
         <span class="stat-num" id="statFailed">0</span>
-        <span class="stat-label">审查失败</span>
+        <span class="stat-label" data-i18n="stat.failed">审查失败</span>
       </div>
       <div class="stat-card">
         <span class="stat-num" id="statAuthors">0</span>
-        <span class="stat-label">参与人数</span>
+        <span class="stat-label" data-i18n="stat.authors">参与人数</span>
       </div>
     </div>
   </section>
@@ -699,8 +734,8 @@ td.action-cell::before, th.action-col::before {
   <!-- 记录 / 统计 -->
   <section>
     <nav class="tabs">
-      <button class="tab-button active" onclick="switchTab('data')" id="tabData">记录</button>
-      <button class="tab-button" onclick="switchTab('charts')" id="tabCharts">统计</button>
+      <button class="tab-button active" onclick="switchTab('data')" id="tabData" data-i18n="tab.records">记录</button>
+      <button class="tab-button" onclick="switchTab('charts')" id="tabCharts" data-i18n="tab.charts">统计</button>
     </nav>
 
     <div id="tabContentData" class="tab-content">
@@ -708,20 +743,20 @@ td.action-cell::before, th.action-col::before {
         <table>
           <thead>
             <tr>
-              <th>项目</th>
-              <th>作者</th>
-              <th id="branchHeader">源分支</th>
-              <th>更新时间</th>
-              <th>提交信息</th>
-              <th>代码变更</th>
-              <th>分数</th>
-              <th>状态</th>
-              <th id="urlHeader">链接</th>
-              <th class="action-col">操作</th>
+              <th data-i18n="col.project">项目</th>
+              <th data-i18n="col.author">作者</th>
+              <th id="branchHeader" data-i18n="col.sourceBranch">源分支</th>
+              <th data-i18n="col.updated">更新时间</th>
+              <th data-i18n="col.commits">提交信息</th>
+              <th data-i18n="col.delta">代码变更</th>
+              <th data-i18n="col.score">分数</th>
+              <th data-i18n="col.status">状态</th>
+              <th id="urlHeader" data-i18n="col.link">链接</th>
+              <th class="action-col" data-i18n="col.action">操作</th>
             </tr>
           </thead>
           <tbody id="dataTableBody">
-            <tr><td colspan="10" class="empty">加载中…</td></tr>
+            <tr><td colspan="10" class="empty" data-i18n="state.loading">加载中…</td></tr>
           </tbody>
         </table>
       </div>
@@ -730,28 +765,28 @@ td.action-cell::before, th.action-col::before {
     <div id="tabContentCharts" class="tab-content hidden">
       <div class="chart-grid">
         <div class="chart-panel">
-          <h3 class="chart-title">项目提交次数</h3>
-          <p class="chart-caption">当前筛选范围内的审查数量</p>
+          <h3 class="chart-title" data-i18n="chart.projectCount">项目提交次数</h3>
+          <p class="chart-caption" data-i18n="chart.countCaption">当前筛选范围内的审查数量</p>
           <div class="bars" id="projectCountChart"></div>
         </div>
         <div class="chart-panel">
-          <h3 class="chart-title">项目平均分数</h3>
-          <p class="chart-caption">满分 100，越高表示问题越少</p>
+          <h3 class="chart-title" data-i18n="chart.projectScore">项目平均分数</h3>
+          <p class="chart-caption" data-i18n="chart.scoreCaption">满分 100，越高表示问题越少</p>
           <div class="bars" id="projectScoreChart"></div>
         </div>
         <div class="chart-panel">
-          <h3 class="chart-title">人员提交次数</h3>
-          <p class="chart-caption">当前筛选范围内的审查数量</p>
+          <h3 class="chart-title" data-i18n="chart.authorCount">人员提交次数</h3>
+          <p class="chart-caption" data-i18n="chart.countCaption">当前筛选范围内的审查数量</p>
           <div class="bars" id="authorCountChart"></div>
         </div>
         <div class="chart-panel">
-          <h3 class="chart-title">人员平均分数</h3>
-          <p class="chart-caption">满分 100，越高表示问题越少</p>
+          <h3 class="chart-title" data-i18n="chart.authorScore">人员平均分数</h3>
+          <p class="chart-caption" data-i18n="chart.scoreCaption">满分 100，越高表示问题越少</p>
           <div class="bars" id="authorScoreChart"></div>
         </div>
         <div class="chart-panel wide">
-          <h3 class="chart-title">人员代码变更总行数</h3>
-          <p class="chart-caption">新增与删除行数合计</p>
+          <h3 class="chart-title" data-i18n="chart.authorLines">人员代码变更总行数</h3>
+          <p class="chart-caption" data-i18n="chart.linesCaption">新增与删除行数合计</p>
           <div class="bars" id="authorCodeLineChart"></div>
         </div>
       </div>
@@ -763,10 +798,11 @@ td.action-cell::before, th.action-col::before {
     <img class="footer-logo" src="img/magna-logo.png" alt="Magna" width="300" height="66">
     <p class="footer-team">SW Team</p>
     <p class="footer-copy">© 2026 Magna Mirrors COE</p>
-    <p class="footer-desc">基于 AI 的自动代码审查与统计面板</p>
+    <p class="footer-desc" data-i18n="footer.desc">基于 AI 的自动代码审查与统计面板</p>
   </footer>
 
 </div>
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

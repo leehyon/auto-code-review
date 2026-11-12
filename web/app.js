@@ -4,6 +4,9 @@ let currentReviewType = 'mr';
 
 // 初始化
 document.addEventListener('DOMContentLoaded', function() {
+    // 先定语言：静态文案要立刻换成对应语言，再加载数据
+    initLanguage();
+
     // 设置默认日期
     const today = new Date();
     const sevenDaysAgo = new Date(today);
@@ -75,11 +78,11 @@ function applyTableHeaders() {
     const branchHeader = document.getElementById('branchHeader');
     const urlHeader = document.getElementById('urlHeader');
     if (currentReviewType === 'push') {
-        branchHeader.textContent = '分支';
-        urlHeader.textContent = '提交';
+        branchHeader.textContent = t('col.branch');
+        urlHeader.textContent = t('col.commitLink');
     } else {
-        branchHeader.textContent = '源分支';
-        urlHeader.textContent = '链接';
+        branchHeader.textContent = t('col.sourceBranch');
+        urlHeader.textContent = t('col.link');
     }
 }
 
@@ -98,7 +101,7 @@ function readFilters() {
         document.getElementById('startDate').value = startDate;
         document.getElementById('endDate').value = endDate;
         console.warn('开始日期晚于结束日期，已自动交换:', startDate, '~', endDate);
-        showFilterNotice('开始日期晚于结束日期，已自动交换为 ' + startDate + ' ~ ' + endDate);
+        showFilterNotice(t('notice.dateSwapped') + ' ' + startDate + ' ~ ' + endDate);
     }
 
     const authors = Array.from(document.getElementById('authors').selectedOptions).map(opt => opt.value);
@@ -130,7 +133,7 @@ async function loadData() {
         const params = buildParams(filters);
 
         // 显示加载状态
-        tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">加载中…</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">${t('state.loading')}</td></tr>`;
 
         const response = await fetch(`/api/review/logs?${params.toString()}`);
         const result = await response.json();
@@ -160,7 +163,7 @@ async function loadData() {
         updateLastUpdateTime();
     } catch (error) {
         console.error('加载数据失败:', error);
-        tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">加载失败: ${escapeHtml(error.message)}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">${t('state.loadFailed')}: ${escapeHtml(error.message)}</td></tr>`;
     }
 }
 
@@ -174,7 +177,8 @@ function renderTable(data) {
 
     if (rows.length === 0) {
         const colCount = 10;
-        tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">${failedOnly ? '当前没有失败的审查' : '当前筛选条件下没有记录'}</td></tr>`;
+        const emptyText = failedOnly ? t('state.noFailed') : t('state.noRecords');
+        tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">${emptyText}</td></tr>`;
         return;
     }
 
@@ -188,9 +192,9 @@ function renderTable(data) {
         // 重试入口放在行末的「操作」列
         const failed = item.status && item.status !== 'success';
         const statusCell = failed
-            ? `<span class="status failed" title="${escapeHtml(item.error_message || '审查失败')}">`
-              + `<span class="dot"></span>失败</span>`
-            : '<span class="status"><span class="dot good"></span>完成</span>';
+            ? `<span class="status failed" title="${escapeHtml(item.error_message || t('status.failedTitle'))}">`
+              + `<span class="dot"></span>${t('status.failed')}</span>`
+            : `<span class="status"><span class="dot good"></span>${t('status.done')}</span>`;
 
         let row = `
             <tr>
@@ -214,7 +218,7 @@ function renderTable(data) {
         const actions = [];
         if (!failed && url) {
             actions.push(`<a class="row-action" href="${escapeHtml(url)}" target="_blank" `
-                + `rel="noopener" title="${escapeHtml(url)}">查看</a>`);
+                + `rel="noopener" title="${escapeHtml(url)}">${t('action.view')}</a>`);
         }
         if (failed) {
             actions.push(retryButton(item.id));
@@ -242,12 +246,12 @@ async function loadFilterOptions() {
         const selectedAuthor = authorsSelect.value;
         const selectedProject = projectsSelect.value;
 
-        authorsSelect.innerHTML = '<option value="">全部</option>' +
+        authorsSelect.innerHTML = `<option value="">${t('filter.all')}</option>` +
             (result.authors || []).map(author =>
                 `<option value="${escapeHtml(author)}" ${selectedAuthor === author ? 'selected' : ''}>${escapeHtml(author)}</option>`
             ).join('');
 
-        projectsSelect.innerHTML = '<option value="">全部</option>' +
+        projectsSelect.innerHTML = `<option value="">${t('filter.all')}</option>` +
             (result.project_names || []).map(project =>
                 `<option value="${escapeHtml(project)}" ${selectedProject === project ? 'selected' : ''}>${escapeHtml(project)}</option>`
             ).join('');
@@ -271,12 +275,12 @@ function updateFilterOptions(data) {
     const allAuthors = [...new Set([...existingAuthors, ...newAuthors])].sort();
     const allProjects = [...new Set([...existingProjects, ...newProjects])].sort();
 
-    authorsSelect.innerHTML = '<option value="">全部</option>' +
+    authorsSelect.innerHTML = `<option value="">${t('filter.all')}</option>` +
         allAuthors.map(author =>
             `<option value="${escapeHtml(author)}" ${selectedAuthor === author ? 'selected' : ''}>${escapeHtml(author)}</option>`
         ).join('');
 
-    projectsSelect.innerHTML = '<option value="">全部</option>' +
+    projectsSelect.innerHTML = `<option value="">${t('filter.all')}</option>` +
         allProjects.map(project =>
             `<option value="${escapeHtml(project)}" ${selectedProject === project ? 'selected' : ''}>${escapeHtml(project)}</option>`
         ).join('');
@@ -357,7 +361,7 @@ function renderBars(containerId, data, kind) {
     if (!container) return;
 
     if (!data || data.length === 0) {
-        container.innerHTML = '<div class="no-data">当前筛选条件下没有数据</div>';
+        container.innerHTML = `<div class="no-data">${t('state.noChartData')}</div>`;
         return;
     }
 
@@ -393,6 +397,16 @@ function renderBars(containerId, data, kind) {
                 <span class="bar-value">${shown}</span>
             </div>`;
     }).join('');
+}
+
+// 语言切换后的回调：动态生成的表格和图表要重画
+function onLanguageChanged() {
+    applyTableHeaders();
+    loadData();
+    if (document.getElementById('tabContentCharts')
+        && !document.getElementById('tabContentCharts').classList.contains('hidden')) {
+        loadCharts();
+    }
 }
 
 // 重置筛选器
@@ -431,16 +445,16 @@ function linkLabel(url, reviewType) {
     if (reviewType === 'push') {
         const parts = url.split('/');
         const sha = (parts[parts.length - 1] || '').split('?')[0];
-        return sha ? sha.slice(0, 7) : '查看 →';
+        return sha ? sha.slice(0, 7) : t('action.viewFallback');
     }
     const number = extractPrNumber(url);
-    return number ? `#${number}` : '查看 →';
+    return number ? `#${number}` : t('action.viewFallback');
 }
 
 // 重试按钮
 function retryButton(recordId) {
     if (!recordId) return '';
-    return `<button class="retry-btn" onclick="doRetry(${recordId}, this)">重试</button>`;
+    return `<button class="retry-btn" onclick="doRetry(${recordId}, this)">${t('action.retry')}</button>`;
 }
 
 // 只看失败的审查 —— 重试入口就在这些行上
@@ -462,7 +476,7 @@ function toggleFailedFilter() {
 async function doRetry(recordId, button) {
     if (button) {
         button.disabled = true;
-        button.textContent = '重试中…';
+        button.textContent = t('action.retrying');
     }
     try {
         const response = await fetch('/api/review/retry', {
@@ -472,11 +486,11 @@ async function doRetry(recordId, button) {
         });
         const result = await response.json();
         if (!result.success) {
-            alert('重试失败：' + (result.message || '未知错误'));
+            alert(t('retry.failed') + (result.message || t('retry.unknownError')));
         }
     } catch (error) {
         console.error('重试请求失败:', error);
-        alert('重试请求失败：' + error.message);
+        alert(t('retry.requestFailed') + error.message);
     } finally {
         // 无论成败都刷新列表：重试成功会变成成功记录，还是失败会换一条新的失败记录
         await loadData();

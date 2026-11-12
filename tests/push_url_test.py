@@ -188,7 +188,7 @@ class PushEntityUrlTest(unittest.TestCase):
             project_name='P', author='a', branch='dev', updated_at=123,
             commits=[{'message': 'm'}], score=90, review_result='r',
             url_slug='slug', webhook_data={'k': 1}, additions=7, deletions=8)
-        self.assertEqual(entity.project_name, 'P')
+        self.assertEqual(entity.project_name, 'p')
         self.assertEqual(entity.author, 'a')
         self.assertEqual(entity.branch, 'dev')
         self.assertEqual(entity.updated_at, 123)

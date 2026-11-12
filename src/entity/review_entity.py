@@ -73,7 +73,10 @@ class MergeRequestReviewEntity:
                  commits: list, score: float, url: str, review_result: str, url_slug: str, webhook_data: dict,
                  additions: int, deletions: int, status: str = 'success', error_message: str = '',
                  platform: str = ''):
-        self.project_name = project_name
+        # 项目名统一小写：各平台给的名称大小写不一致（Bitbucket 的 display name
+        # 是大写，slug 是小写；GitLab 用的是人类可读名），不统一的话同一个项目
+        # 会在统计和筛选里裂成好几项。
+        self.project_name = (project_name or '').lower()
         self.author = author
         self.source_branch = source_branch
         self.target_branch = target_branch
@@ -107,7 +110,8 @@ class PushReviewEntity:
     def __init__(self, project_name: str, author: str, branch: str, updated_at: int, commits: list, score: float,
                  review_result: str, url_slug: str, webhook_data: dict, additions: int, deletions: int,
                  url: str = '', status: str = 'success', error_message: str = '', platform: str = ''):
-        self.project_name = project_name
+        # 同样统一小写，理由同 MergeRequestReviewEntity
+        self.project_name = (project_name or '').lower()
         self.author = author
         self.branch = branch
         self.updated_at = updated_at

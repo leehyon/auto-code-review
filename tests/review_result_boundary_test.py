@@ -85,7 +85,7 @@ class ReviewResultBoundaryTest(unittest.TestCase):
         payload = json.loads(client.get('/api/review/logs?type=mr').data.decode())
         row = payload['data'][0]
         self.assertEqual(row['score'], 34)
-        self.assertEqual(row['project_name'], 'P')
+        self.assertEqual(row['project_name'], 'p')
         self.assertEqual(payload['total'], 1)
         self.assertEqual(payload['average_score'], 34)
 
