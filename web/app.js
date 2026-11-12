@@ -209,8 +209,17 @@ function renderTable(data) {
             ? `<td class="nowrap"><a href="${escapeHtml(url)}" target="_blank" rel="noopener" class="pr-link">${linkLabel(url, currentReviewType)}</a></td>`
             : '<td></td>';
 
-        // 行末的操作列：只有失败记录才有重试入口
-        row += `<td class="action-cell">${failed ? retryButton(item.id) : ''}</td>`;
+        // 行末的操作列：成功行给一个「查看」跳到对应的 PR，
+        // 失败行的动作是「重试」，不再重复给查看入口
+        const actions = [];
+        if (!failed && url) {
+            actions.push(`<a class="row-action" href="${escapeHtml(url)}" target="_blank" `
+                + `rel="noopener" title="${escapeHtml(url)}">查看</a>`);
+        }
+        if (failed) {
+            actions.push(retryButton(item.id));
+        }
+        row += `<td class="action-cell">${actions.join('')}</td>`;
 
         row += '</tr>';
         return row;
@@ -296,6 +305,51 @@ async function loadCharts() {
     }
 }
 
+// 人员代码变更总行数：每个人一个固定颜色。
+// 按名字哈希取色 —— 同一个人在任何筛选条件下都是同一个颜色；
+// 撞色了往后挪一格，避免两个人同色。
+const PERSON_COLOR_COUNT = 8;
+
+// 手动指定颜色的人：优先于哈希分配，槽位会先占住，
+// 后面的人自动避开，不会撞色。
+const PERSON_COLOR_OVERRIDES = {
+    'liyahong': 'c1',   // 青蓝
+};
+
+function assignPersonColors(names) {
+    const used = new Set();
+    const map = {};
+
+    // 先占住手动指定的颜色
+    for (const name of names) {
+        const override = PERSON_COLOR_OVERRIDES[String(name).toLowerCase()];
+        if (!override) continue;
+        const slot = Number(override.slice(1));
+        if (!used.has(slot)) {
+            used.add(slot);
+            map[name] = override;
+        }
+    }
+
+    // 其余的人按名字哈希取色，避开已占用的槽位
+    for (const name of names) {
+        if (map[name]) continue;
+        let hash = 0;
+        for (let i = 0; i < name.length; i++) {
+            hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+        }
+        const start = hash % PERSON_COLOR_COUNT;
+        let slot = start;
+        for (let k = 0; k < PERSON_COLOR_COUNT; k++) {
+            const candidate = (start + k) % PERSON_COLOR_COUNT;
+            if (!used.has(candidate)) { slot = candidate; break; }
+        }
+        used.add(slot);
+        map[name] = 'c' + slot;
+    }
+    return map;
+}
+
 // 渲染横向条形图
 // kind: count | score | lines —— 决定配色和数值格式
 function renderBars(containerId, data, kind) {
@@ -314,6 +368,11 @@ function renderBars(containerId, data, kind) {
         return { name: item.name || '—', value };
     });
 
+    // 代码变更总行数按人分配固定颜色；其它图表保持各自的语义配色
+    const personColors = kind === 'lines'
+        ? assignPersonColors(rows.map(r => r.name))
+        : null;
+
     const max = Math.max(...rows.map(r => r.value), 1);
 
     container.innerHTML = rows.map(row => {
@@ -325,7 +384,7 @@ function renderBars(containerId, data, kind) {
         if (kind === 'score') {
             tone = row.value >= 80 ? 'good' : (row.value >= 60 ? 'mid' : 'bad');
         } else if (kind === 'lines') {
-            tone = 'bad';
+            tone = personColors[row.name] || 'c0';
         }
         return `
             <div class="bar-row">

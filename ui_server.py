@@ -94,7 +94,12 @@ def get_review_logs():
         
         # 转换为字典列表
         records = df.to_dict(orient='records')
-        
+
+        # review_result 不下发给前端：Dashboard 不用它，
+        # 完整报告已经在 PR 评论上，Summary 只留在数据库里做审计底。
+        for record in records:
+            record.pop('review_result', None)
+
         # 计算统计信息
         total = len(records)
         # score 列可能含 None（失败记录），要转回数值再求平均

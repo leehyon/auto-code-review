@@ -376,7 +376,8 @@ td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-s
 .status.failed { color: var(--rust); }
 .status.failed .dot { background: var(--rust); }
 
-.retry-btn {
+/* 行内操作按钮：查看 PR、重试 */
+.row-action, .retry-btn {
   font-family: var(--sans);
   font-size: 12px;
   padding: 4px 11px;
@@ -386,22 +387,30 @@ td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-s
   color: var(--slate);
   cursor: pointer;
   white-space: nowrap;
+  display: inline-block;
+  text-decoration: none;
   transition: border-color 120ms ease, background 120ms ease;
 }
-.retry-btn:hover { border-color: var(--clay); color: var(--clay); }
+.row-action:hover, .retry-btn:hover { border-color: var(--clay); color: var(--clay); }
 .retry-btn:disabled { opacity: 0.5; cursor: default; }
-.retry-btn:hover:disabled { border-color: var(--gray-300); color: var(--slate); }
+.row-action:hover:disabled, .retry-btn:hover:disabled { border-color: var(--gray-300); color: var(--slate); }
+/* 两个按钮并排时的间距 */
+.action-cell .row-action + .row-action,
+.action-cell .row-action + .retry-btn,
+.action-cell .retry-btn + .row-action { margin-left: 6px; }
 
-/* 操作列：行末放重试按钮，宽度固定，避免列宽随内容跳动 */
+/* 操作列：行末放查看/重试按钮，宽度固定，避免列宽随内容跳动 */
 .action-col { width: 88px; }
-/* 表格有横向滚动条，操作列右固定，重试入口始终可见 */
+/* 表格有横向滚动条，操作列右固定，重试入口始终可见。
+   固定列必须是不透明背景，否则滚动时内容会从下面透出来。
+   背景色要跟同列其它单元格一致：表头是灰底（--gray-100），
+   表体是白底（--white，.table-wrap 的底色）。 */
 th.action-col, td.action-cell {
   position: sticky;
   right: 0;
-  background: var(--white);
 }
-th.action-col { z-index: 2; }
-td.action-cell { text-align: right; }
+th.action-col { z-index: 2; background: var(--gray-100); }
+td.action-cell { text-align: right; background: var(--white); }
 tbody tr:hover td.action-cell { background: var(--ivory); }
 /* 固定列的左侧分隔线，提示这里是浮在上面的 */
 td.action-cell::before, th.action-col::before {
@@ -500,6 +509,18 @@ td.action-cell::before, th.action-col::before {
 .bar-fill.good { background: var(--olive); }
 .bar-fill.mid  { background: var(--clay); }
 .bar-fill.bad  { background: var(--rust); }
+
+/* 人员代码变更总行数：每个人一个固定颜色。
+   按名字哈希取色，同一个人在任何筛选条件下都是同一个颜色；
+   撞色了就往后挪一格，避免两个人同色。 */
+.bar-fill.c0 { background: #D97757; }  /* 陶土 */
+.bar-fill.c1 { background: #4A7C8C; }  /* 青蓝 */
+.bar-fill.c2 { background: #788C5D; }  /* 橄榄 */
+.bar-fill.c3 { background: #8A6A8F; }  /* 梅紫 */
+.bar-fill.c4 { background: #B08D57; }  /* 赭石 */
+.bar-fill.c5 { background: #B04A3F; }  /* 砖红 */
+.bar-fill.c6 { background: #5F7FA6; }  /* 雾蓝 */
+.bar-fill.c7 { background: #6E7B5A; }  /* 卡其 */
 
 .bar-value {
   font-family: var(--mono);

@@ -3,6 +3,7 @@ import pandas as pd
 from src.entity.review_entity import MergeRequestReviewEntity, PushReviewEntity
 from src.service.db_factory import get_db_connection, DatabaseFactory
 from src.utils.log import logger
+from src.utils.review_summary import extract_summary
 
 
 class ReviewService:
@@ -153,6 +154,9 @@ class ReviewService:
         status 为 'failed' 时表示审查没跑完（模型超时、网络错误等），
         这类记录没有 review_result，也没有在 PR 上留评论，
         但会出现在 Dashboard 里，供人工点重试。
+
+        review_result 只存 Summary 段：完整报告已经作为评论发到 PR 上了，
+        全文入库会让这一列占到记录的 90% 以上。
         """
         try:
             with get_db_connection() as conn:
@@ -163,7 +167,8 @@ class ReviewService:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (entity.project_name, entity.author, entity.source_branch,
                       entity.target_branch, entity.updated_at, entity.commit_messages,
-                      entity.score, entity.url, entity.review_result, entity.additions, entity.deletions,
+                      entity.score, entity.url, extract_summary(entity.review_result),
+                      entity.additions, entity.deletions,
                       getattr(entity, 'status', 'success'),
                       getattr(entity, 'error_message', ''),
                       getattr(entity, 'platform', ''),
@@ -183,7 +188,7 @@ class ReviewService:
             with get_db_connection() as conn:
                 query = """
                     SELECT id, project_name, author, source_branch, target_branch, updated_at,
-                           commit_messages, score, url, review_result, additions, deletions,
+                           commit_messages, score, url, additions, deletions,
                            status, error_message, platform
                     FROM mr_review_log
                     WHERE 1=1
@@ -222,7 +227,10 @@ class ReviewService:
 
     @staticmethod
     def insert_push_review_log(entity: PushReviewEntity):
-        """插入推送审核日志"""
+        """插入推送审核日志
+
+        review_result 同样只存 Summary 段，理由同 insert_mr_review_log。
+        """
         try:
             with get_db_connection() as conn:
                 conn.execute('''
@@ -232,7 +240,8 @@ class ReviewService:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (entity.project_name, entity.author, entity.branch,
                       entity.updated_at, entity.commit_messages, entity.score,
-                      entity.review_result, entity.additions, entity.deletions,
+                      extract_summary(entity.review_result),
+                      entity.additions, entity.deletions,
                       entity.url,
                       getattr(entity, 'status', 'success'),
                       getattr(entity, 'error_message', ''),
@@ -376,7 +385,7 @@ class ReviewService:
             with get_db_connection() as conn:
                 query = """
                     SELECT id, project_name, author, branch, updated_at, commit_messages,
-                           score, review_result, additions, deletions, url,
+                           score, additions, deletions, url,
                            status, error_message, platform
                     FROM push_review_log
                     WHERE 1=1
