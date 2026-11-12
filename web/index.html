@@ -72,15 +72,81 @@ header { margin-bottom: 36px; }
 
 /* 刊头：拉丁文标题用衬线。Georgia 是为屏幕渲染设计的衬线——
    x 高度大、衬线结实，大字号下比 Times 更有分量，且不需要外部字体。
-   收紧字距让刊头更紧凑，避免大字号衬线显得松散。 */
+   收紧字距让刊头更紧凑，避免大字号衬线显得松散。
+   「Review」用斜体，下面压一道陶土色的笔迹 ——
+   这面板做的就是代码评审，标题带批注线是切题的装饰，不是花纹。 */
 h1 {
   font-family: var(--serif);
   font-weight: 400;
-  font-size: 40px;
-  letter-spacing: -0.025em;
-  line-height: 1.1;
-  margin: 0;
+  font-size: 46px;
+  letter-spacing: -0.03em;
+  line-height: 1.06;
+  /* code-chip 是行内元素，盒子会探出行盒；留一点下边距，
+     免得 chip 底边贴着副标题 */
+  margin: 0 0 4px;
 }
+
+/* 「Review」用手写体 —— 但必须是系统自带的脚本字体：
+   Dashboard 零外部依赖（不引 CDN），所以只能靠字体栈。
+   脚本字体本身已经是斜的，font-style 必须回到 normal，
+   否则浏览器会再做一次假斜体合成，歪得没法看。
+
+   栈按「小而紧凑」排：
+     Segoe Script、Ink Free、Bradley Hand (Windows) —— 手写体，字面小
+     Snell Roundhand (macOS)、URW Chancery L、Z003 (Linux) —— 书法体，笔画舒展但偏大
+   各系统落到哪个字体取决于本机装了什么。 */
+h1 em {
+  font-family: "Segoe Script", "Ink Free", "Bradley Hand",
+               "Snell Roundhand", "URW Chancery L", "Z003", "Apple Chancery",
+               "Lucida Handwriting", cursive;
+  font-style: normal;
+  font-weight: 400;
+  /* 脚本字体 x 高度比 Georgia 小，0.85em 折算下来才和等宽的「<Code>」差不多大 */
+  font-size: 0.85em;
+  letter-spacing: 0;
+  position: relative;
+}
+
+/* 评审笔迹：略微倾斜的陶土色下划线。
+   位置锚在基线附近而不是 em 盒底 —— 脚本字体的下降部分很大
+   （Z003 就有 0.32em），按盒底定位会掉到基线下方十几像素，
+   离字太远。0.26em 让线贴着字母脚下，落在基线下方 2px 上下。 */
+h1 em::after {
+  content: '';
+  position: absolute;
+  left: -0.02em;
+  right: 0.04em;
+  bottom: 0.26em;
+  height: 0.05em;
+  min-height: 2px;
+  background: var(--clay);
+  border-radius: 2px;
+  opacity: 0.85;
+  transform: rotate(-2deg);
+}
+
+/* 「Code」用等宽字体 + 尖括号，不加任何底色或边框。
+   试过 markdown 代码块的浅灰底 —— 灰底一加，标题就成了贴了个控件在字上，
+   跟旁边的手写体不是一个语汇。现在全靠字体本身区分：
+   等宽 = 机器，尖括号 = 代码标记，手写 + 笔迹 = 人的批注。 */
+h1 .code-chip {
+  font-family: var(--mono);
+  /* 等宽字的 cap height 比脚本字体高，字号要压到和「Review」视觉等高 */
+  font-size: 0.8em;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--slate);
+}
+
+h1 .code-chip::before,
+h1 .code-chip::after {
+  color: var(--gray-500);
+  font-weight: 400;
+}
+
+/* 尖括号和文字之间留一点缝 */
+h1 .code-chip::before { content: '<'; margin-right: 0.08em; }
+h1 .code-chip::after { content: '>'; margin-left: 0.08em; }
 
 .subtitle {
   color: var(--gray-500);
@@ -660,7 +726,7 @@ td.action-cell::before, th.action-col::before {
   <header>
     <div class="header-top">
       <div class="title-block">
-        <h1>Code Review</h1>
+        <h1><span class="code-chip">Code</span> <em>Review</em></h1>
         <p class="subtitle" data-i18n="meta.subtitle">Merge Request 与 Push 的自动审查记录</p>
       </div>
       <div class="header-tools">

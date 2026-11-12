@@ -92,10 +92,21 @@ class I18nTableTest(unittest.TestCase):
         self.assertEqual(missing, set(), f'app.js 引用了不存在的 key: {sorted(missing)}')
 
     def test_title_unchanged(self):
-        """主标题「Code Review」不参与翻译。"""
+        """主标题「Code Review」不参与翻译。
+
+        标题的标记可以变（斜体、下划线笔迹），但文本必须是 Code Review，
+        而且不能挂 data-i18n —— 它是品牌名，不是界面文案。
+        """
         html = _read(INDEX_HTML)
-        self.assertIn('<h1>Code Review</h1>', html)
-        self.assertNotIn('data-i18n="meta.title"', html)
+        m = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.DOTALL)
+        if m is None:
+            self.fail('找不到 h1')
+            return
+        title_html = m.group(0)
+        title_text = m.group(1)
+        # 去掉标记后应该正好是 "Code Review"
+        self.assertEqual(re.sub(r'<[^>]+>', '', title_text).strip(), 'Code Review')
+        self.assertNotIn('data-i18n', title_html)
 
     def test_language_switch_present(self):
         html = _read(INDEX_HTML)
