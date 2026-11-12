@@ -71,9 +71,17 @@ class TestFactory(unittest.TestCase):
 class TestGitHubCopilotClient(unittest.TestCase):
 
     def setUp(self):
+        # 清掉环境里的真实凭据：这些测试绝不能发真实请求（会消耗额度）
         for key in ('GITHUB_COPILOT_TOKEN', 'GITHUB_TOKEN', 'GITHUB_COPILOT_MODEL',
                     'GITHUB_COPILOT_API_BASE_URL', 'GITHUB_COPILOT_API_MODE'):
             os.environ.pop(key, None)
+        # 换 token 的结论是进程级的，每个用例都要从干净状态开始
+        import src.llm.client.github_copilot as mod
+        mod.reset_exchange_cache()
+
+    def tearDown(self):
+        import src.llm.client.github_copilot as mod
+        mod.reset_exchange_cache()
 
     def _client(self, **env):
         for k, v in env.items():
@@ -143,16 +151,20 @@ class TestGitHubCopilotClient(unittest.TestCase):
 
     def test_exchange_failure_falls_back_to_raw_token(self):
         """实测部分订阅类型（business）换 token 会 403，这时原始 token 直接当 Bearer 可用。"""
+        import src.llm.client.github_copilot as mod
+        mod.reset_exchange_cache()
         client = self._client(GITHUB_COPILOT_TOKEN='ghp_pat')
         with mock.patch.object(GitHubCopilotClient, '_discover_endpoint', return_value=None), \
                 mock.patch('src.llm.client.github_copilot.requests.get',
                            return_value=FakeResponse(403, None, 'Forbidden')):
             token = client._resolve_token()
         self.assertEqual(token, 'ghp_pat')
-        # 记住换 token 不可用，后面不再重复请求
-        self.assertTrue(client._exchange_unavailable)
+        # 记住换 token 不可用，后面不再重复请求（进程级结论）
+        self.assertTrue(mod._EXCHANGE_UNAVAILABLE)
 
     def test_exchange_not_retried_after_failure(self):
+        import src.llm.client.github_copilot as mod
+        mod.reset_exchange_cache()
         client = self._client(GITHUB_COPILOT_TOKEN='ghp_pat')
         with mock.patch.object(GitHubCopilotClient, '_discover_endpoint', return_value=None), \
                 mock.patch('src.llm.client.github_copilot.requests.get',

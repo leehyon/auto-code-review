@@ -7,7 +7,19 @@ from src.utils.log import logger
 
 # 指定环境变量文件路径
 ENV_FILE_PATH = "config/.env"
-load_dotenv(ENV_FILE_PATH)
+
+
+def load_env_file():
+    """加载 .env。
+
+    以前在模块导入时加载，结果是任何 import 这个模块的进程（包括跑测试的）
+    都会被本机真实配置污染——测试的行为取决于 .env 里写了什么，
+    换个机器或改个配置就莫名其妙失败。
+
+    改成按需加载：真正要检查配置时才读文件。
+    api.py 自己在入口处 load_dotenv，生产路径不受影响。
+    """
+    load_dotenv(ENV_FILE_PATH)
 
 
 REQUIRED_ENV_VARS = [
@@ -71,6 +83,7 @@ def check_config(check_connectivity: bool = True):
         再换 token，各自带 30 秒超时）。Web 服务启动时应该传 False，
         把连通性检查放到后台线程，避免端口迟迟不监听。
     """
+    load_env_file()
     logger.info("开始检查配置项...")
     check_env_vars()
     check_llm_provider()

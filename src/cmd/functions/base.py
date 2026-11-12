@@ -62,9 +62,11 @@ class LLMReviewFunc(BaseReviewFunc):
         self.review_max_tokens = int(os.getenv('REVIEW_MAX_TOKENS', self.DEFAULT_REVIEW_MAX_TOKENS))
 
     def call_llm(self, messages: List[Dict[str, Any]]) -> str:
-        print(f"向 AI请求, messages: {messages}")
+        # 只记长度，不打印完整 prompt——几万 token 的内容会把终端和日志撑爆
+        sizes = {m.get('role', '?'): len(m.get('content', '') or '') for m in messages}
+        print(f"向 AI 请求: {sizes}")
         review_result = self.client.completions(messages=messages)
-        print(f"收到 AI 返回结果: {review_result}")
+        print(f"收到 AI 返回结果: {len(review_result)} 字符")
         return review_result
 
     def review_and_strip_code(self, text: str) -> str:

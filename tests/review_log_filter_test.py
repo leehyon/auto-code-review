@@ -27,12 +27,16 @@ class ReviewLogFilterTest(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_name TEXT, author TEXT, source_branch TEXT, target_branch TEXT,
                 updated_at INTEGER, commit_messages TEXT, score INTEGER, url TEXT,
-                review_result TEXT, additions INTEGER, deletions INTEGER);
+                review_result TEXT, additions INTEGER, deletions INTEGER,
+                status TEXT DEFAULT 'success', error_message TEXT, platform TEXT,
+                webhook_data TEXT);
             CREATE TABLE push_review_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_name TEXT, author TEXT, branch TEXT, updated_at INTEGER,
                 commit_messages TEXT, score INTEGER, review_result TEXT,
-                additions INTEGER, deletions INTEGER, url TEXT);
+                additions INTEGER, deletions INTEGER, url TEXT,
+                status TEXT DEFAULT 'success', error_message TEXT, platform TEXT,
+                webhook_data TEXT);
         """)
         con.executemany(
             "INSERT INTO mr_review_log (project_name, author, source_branch, target_branch,"

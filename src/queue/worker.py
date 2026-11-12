@@ -8,14 +8,174 @@ from src.gitlab.webhook_handler import filter_changes, MergeRequestHandler, Push
 from src.github.webhook_handler import filter_changes as filter_github_changes, PullRequestHandler as GithubPullRequestHandler, PushHandler as GithubPushHandler
 from src.gitea.webhook_handler import filter_changes as filter_gitea_changes, PullRequestHandler as GiteaPullRequestHandler, PushHandler as GiteaPushHandler
 from src.bitbucket.webhook_handler import filter_changes as filter_bitbucket_changes, PullRequestHandler as BitbucketPullRequestHandler, PushHandler as BitbucketPushHandler
+from src.service.review_service import ReviewService
 from src.utils.code_reviewer import CodeReviewer
 from src.utils.messaging import notifier
 from src.utils.log import logger
 
 
+def _record_failed_review(review_type: str, context: dict, error_message: str):
+    """把失败的审查写进数据库。
+
+    失败时**不在 PR 上留评论**（免得刷屏，也让用户一眼看出评论都是真结果），
+    但要出现在 Dashboard 里——否则失败就是完全静默的，人只会觉得"这工具没反应"。
+
+    记录里带上触发时的 webhook payload，重试时用它还原现场。
+    """
+    try:
+        if review_type == 'push':
+            entity = PushReviewEntity(
+                project_name=context.get('project_name', ''),
+                author=context.get('author', ''),
+                branch=context.get('branch', ''),
+                updated_at=int(datetime.now().timestamp()),
+                commits=context.get('commits') or [],
+                score=0,
+                review_result='',
+                url_slug=context.get('url_slug', ''),
+                webhook_data=context.get('webhook_data') or {},
+                additions=context.get('additions', 0),
+                deletions=context.get('deletions', 0),
+                url=context.get('url', ''),
+                status='failed',
+                error_message=error_message,
+                platform=context.get('platform', ''))
+            ReviewService.insert_push_review_log(entity)
+        else:
+            entity = MergeRequestReviewEntity(
+                project_name=context.get('project_name', ''),
+                author=context.get('author', ''),
+                source_branch=context.get('source_branch', ''),
+                target_branch=context.get('target_branch', ''),
+                updated_at=int(datetime.now().timestamp()),
+                commits=context.get('commits') or [],
+                score=0,
+                url=context.get('url', ''),
+                review_result='',
+                url_slug=context.get('url_slug', ''),
+                webhook_data=context.get('webhook_data') or {},
+                additions=context.get('additions', 0),
+                deletions=context.get('deletions', 0),
+                status='failed',
+                error_message=error_message,
+                platform=context.get('platform', ''))
+            ReviewService.insert_mr_review_log(entity)
+    except Exception:
+        logger.error('Failed to record the failed review', exc_info=True)
+
+
+def _retry_handlers():
+    """(记录类型, 平台) -> 重跑函数。
+
+    重试靠重放触发时的 webhook payload，所以各平台入口签名一致就行。
+    """
+    return {
+        ('mr', 'bitbucket'): lambda payload: handle_bitbucket_pull_request_event(
+            payload,
+            os.environ.get('BITBUCKET_ACCESS_TOKEN', ''),
+            os.environ.get('BITBUCKET_URL', ''),
+            'bitbucket'),
+        ('push', 'bitbucket'): lambda payload: handle_bitbucket_push_event(
+            payload,
+            os.environ.get('BITBUCKET_ACCESS_TOKEN', ''),
+            os.environ.get('BITBUCKET_URL', ''),
+            'bitbucket'),
+        ('mr', 'github'): lambda payload: handle_github_pull_request_event(
+            payload,
+            os.environ.get('GITHUB_ACCESS_TOKEN', ''),
+            os.environ.get('GITHUB_URL', 'https://github.com'),
+            'github'),
+        ('push', 'github'): lambda payload: handle_github_push_event(
+            payload,
+            os.environ.get('GITHUB_ACCESS_TOKEN', ''),
+            os.environ.get('GITHUB_URL', 'https://github.com'),
+            'github'),
+        ('mr', 'gitlab'): lambda payload: handle_merge_request_event(
+            payload,
+            os.environ.get('GITLAB_ACCESS_TOKEN', ''),
+            os.environ.get('GITLAB_URL', ''),
+            'gitlab'),
+        ('push', 'gitlab'): lambda payload: handle_push_event(
+            payload,
+            os.environ.get('GITLAB_ACCESS_TOKEN', ''),
+            os.environ.get('GITLAB_URL', ''),
+            'gitlab'),
+        ('mr', 'gitea'): lambda payload: handle_gitea_pull_request_event(
+            payload,
+            os.environ.get('GITEA_ACCESS_TOKEN', ''),
+            os.environ.get('GITEA_URL', ''),
+            'gitea'),
+        ('push', 'gitea'): lambda payload: handle_gitea_push_event(
+            payload,
+            os.environ.get('GITEA_ACCESS_TOKEN', ''),
+            os.environ.get('GITEA_URL', ''),
+            'gitea'),
+    }
+
+
+def retry_failed_review(review_type: str, record_id: int) -> dict:
+    """重跑一次失败的审查。
+
+    流程：读出失败记录 -> 删掉它 -> 用保存的 webhook payload 原样重放。
+    重放走正常审查流程：成功就发评论并写入新记录，还是失败就再写一条 failed 记录。
+    """
+    record = ReviewService.get_review_log(review_type, record_id)
+    if not record:
+        return {'success': False, 'message': '记录不存在，可能已经被重试过'}
+
+    payload = record.get('webhook_data') or {}
+    if not payload:
+        return {'success': False, 'message': '这条记录没有保存触发时的请求内容，无法重试'}
+
+    platform = (record.get('platform') or '').lower()
+    handler = _retry_handlers().get((review_type, platform))
+    if handler is None:
+        return {'success': False,
+                'message': f'暂不支持 {platform or "未知平台"} 的重试'}
+
+    logger.info(f"Retrying failed review: type={review_type} id={record_id} platform={platform}")
+
+    # 不要先删失败行：重放可能走「没有变更」这种正常返回路径（不抛异常），
+    # 那样既没写出新记录，旧记录又被删了 —— 失败记录会凭空消失。
+    # 先重放，再根据有没有产出新记录决定旧记录怎么处理。
+    try:
+        handler(payload)
+    except Exception as e:
+        logger.error(f"Retry raised an exception: {e}", exc_info=True)
+
+    # 新写入的记录 id 一定比旧的大
+    newest = ReviewService.get_newest_review_log_id(review_type)
+    if newest and newest > record_id:
+        # 新记录顶上，删掉旧的失败行，Dashboard 上不留重复
+        ReviewService.delete_review_log(review_type, record_id)
+        return {'success': True, 'message': '已重新提交审查'}
+
+    # 没有任何产出：保留失败行，并把「重试也没结果」写进错误信息，
+    # 不能让它凭空消失 —— 用户需要知道这条还是失败的。
+    reason = (record.get('error_message') or '').strip()
+    merged = f"{reason} | 重试后仍未产生审查结果" if reason else '重试后仍未产生审查结果'
+    ReviewService.update_review_log(review_type, record_id, 'failed', merged)
+    return {'success': False, 'message': '重试后仍未产生审查结果，请查看错误信息'}
+
+
+def _safe_get(container, *keys, default=''):
+    """安全地从嵌套 dict 取值，任何一层缺失都返回默认值。"""
+    current = container
+    for key in keys:
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key)
+        if current is None:
+            return default
+    return current
+
 
 def handle_push_event(webhook_data: dict, gitlab_token: str, gitlab_url: str, gitlab_url_slug: str):
     push_review_enabled = os.environ.get('PUSH_REVIEW_ENABLED', '0') == '1'
+    handler = None
+    commits = []
+    additions = 0
+    deletions = 0
     try:
         handler = PushHandler(webhook_data, gitlab_token, gitlab_url)
         logger.info('Push Hook event received')
@@ -65,6 +225,18 @@ def handle_push_event(webhook_data: dict, gitlab_token: str, gitlab_url: str, gi
 
     except Exception as e:
         error_message = f'服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        _record_failed_review('push', {
+            'project_name': _safe_get(webhook_data, 'project', 'name'),
+            'author': _safe_get(webhook_data, 'user_username'),
+            'branch': _safe_get(webhook_data, 'project', 'default_branch'),
+            'commits': commits,
+            'additions': additions,
+            'deletions': deletions,
+            'url': getattr(handler, 'push_url', '') if handler else '',
+            'webhook_data': webhook_data,
+            'url_slug': gitlab_url_slug,
+            'platform': 'gitlab',
+        }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)
 
@@ -83,6 +255,9 @@ def handle_merge_request_event(webhook_data: dict, gitlab_token: str, gitlab_url
     merge_review_only_branch_names = [b.strip() for b in merge_review_only_branch_name_str.split(',') if b.strip()] if merge_review_only_branch_name_str else []
 
 
+    commits = []
+    additions = 0
+    deletions = 0
     try:
         # 解析Webhook数据
         handler = MergeRequestHandler(webhook_data, gitlab_token, gitlab_url)
@@ -149,11 +324,28 @@ def handle_merge_request_event(webhook_data: dict, gitlab_token: str, gitlab_url
 
     except Exception as e:
         error_message = f'AI Code Review 服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        _record_failed_review('mr', {
+            'project_name': _safe_get(webhook_data, 'project', 'name'),
+            'author': _safe_get(webhook_data, 'user', 'username'),
+            'source_branch': _safe_get(webhook_data, 'object_attributes', 'source_branch'),
+            'target_branch': _safe_get(webhook_data, 'object_attributes', 'target_branch'),
+            'commits': commits,
+            'additions': additions,
+            'deletions': deletions,
+            'url': _safe_get(webhook_data, 'object_attributes', 'url'),
+            'webhook_data': webhook_data,
+            'url_slug': gitlab_url_slug,
+            'platform': 'gitlab',
+        }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)
 
 def handle_github_push_event(webhook_data: dict, github_token: str, github_url: str, github_url_slug: str):
     push_review_enabled = os.environ.get('PUSH_REVIEW_ENABLED', '0') == '1'
+    handler = None
+    commits = []
+    additions = 0
+    deletions = 0
     try:
         handler = GithubPushHandler(webhook_data, github_token, github_url)
         logger.info('GitHub Push event received')
@@ -203,6 +395,18 @@ def handle_github_push_event(webhook_data: dict, github_token: str, github_url: 
 
     except Exception as e:
         error_message = f'服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        _record_failed_review('push', {
+            'project_name': _safe_get(webhook_data, 'repository', 'name'),
+            'author': _safe_get(webhook_data, 'sender', 'login'),
+            'branch': _safe_get(webhook_data, 'ref').replace('refs/heads/', ''),
+            'commits': commits,
+            'additions': additions,
+            'deletions': deletions,
+            'url': getattr(handler, 'push_url', '') if handler else '',
+            'webhook_data': webhook_data,
+            'url_slug': github_url_slug,
+            'platform': 'github',
+        }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)
 
@@ -217,6 +421,9 @@ def handle_github_pull_request_event(webhook_data: dict, github_token: str, gith
     :return:
     '''
     merge_review_only_protected_branches = os.environ.get('MERGE_REVIEW_ONLY_PROTECTED_BRANCHES_ENABLED', '0') == '1'
+    commits = []
+    additions = 0
+    deletions = 0
     try:
         # 解析Webhook数据
         handler = GithubPullRequestHandler(webhook_data, github_token, github_url)
@@ -279,12 +486,32 @@ def handle_github_pull_request_event(webhook_data: dict, github_token: str, gith
 
     except Exception as e:
         error_message = f'服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        _record_failed_review('mr', {
+            'project_name': _safe_get(webhook_data, 'repository', 'name'),
+            'author': _safe_get(webhook_data, 'pull_request', 'user', 'login'),
+            'source_branch': _safe_get(webhook_data, 'pull_request', 'head', 'ref'),
+            'target_branch': _safe_get(webhook_data, 'pull_request', 'base', 'ref'),
+            'commits': commits,
+            'additions': additions,
+            'deletions': deletions,
+            'url': _safe_get(webhook_data, 'pull_request', 'html_url'),
+            'webhook_data': webhook_data,
+            'url_slug': github_url_slug,
+            'platform': 'github',
+        }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)
 
 
 def handle_gitea_push_event(webhook_data: dict, gitea_token: str, gitea_url: str, gitea_url_slug: str):
     push_review_enabled = os.environ.get('PUSH_REVIEW_ENABLED', '0') == '1'
+    handler = None
+    commits = []
+    additions = 0
+    deletions = 0
+    project_name = ''
+    author = ''
+    branch = ''
     try:
         handler = GiteaPushHandler(webhook_data, gitea_token, gitea_url)
         logger.info('Gitea Push event received')
@@ -379,6 +606,18 @@ def handle_gitea_push_event(webhook_data: dict, gitea_token: str, gitea_url: str
 
     except Exception as e:
         error_message = f'服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        _record_failed_review('push', {
+            'project_name': project_name,
+            'author': author,
+            'branch': branch,
+            'commits': commits,
+            'additions': additions,
+            'deletions': deletions,
+            'url': getattr(handler, 'push_url', '') if handler else '',
+            'webhook_data': webhook_data,
+            'url_slug': gitea_url_slug,
+            'platform': 'gitea',
+        }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)
 
@@ -393,6 +632,14 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
     :return:
     '''
     merge_review_only_protected_branches = os.environ.get('MERGE_REVIEW_ONLY_PROTECTED_BRANCHES_ENABLED', '0') == '1'
+    commits = []
+    additions = 0
+    deletions = 0
+    project_name = ''
+    author = ''
+    source_branch = ''
+    target_branch = ''
+    html_url = ''
     try:
         # 解析Webhook数据
         handler = GiteaPullRequestHandler(webhook_data, gitea_token, gitea_url)
@@ -513,6 +760,19 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
 
     except Exception as e:
         error_message = f'服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        _record_failed_review('mr', {
+            'project_name': project_name,
+            'author': author,
+            'source_branch': source_branch,
+            'target_branch': target_branch,
+            'commits': commits,
+            'additions': additions,
+            'deletions': deletions,
+            'url': html_url,
+            'webhook_data': webhook_data,
+            'url_slug': gitea_url_slug,
+            'platform': 'gitea',
+        }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)
 
@@ -531,6 +791,10 @@ def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str
     merge_review_only_branch_name_str = os.environ.get('MERGE_REVIEW_ONLY_BRANCH_NAME', '')  # 需要review的分支名称，逗号分隔
     merge_review_only_branch_names = [b.strip() for b in merge_review_only_branch_name_str.split(',') if b.strip()] if merge_review_only_branch_name_str else []
 
+    handler = None
+    commits = []
+    additions = 0
+    deletions = 0
     try:
         # 解析Webhook数据
         handler = BitbucketPullRequestHandler(webhook_data, bitbucket_token, bitbucket_url)
@@ -603,6 +867,19 @@ def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str
 
     except Exception as e:
         error_message = f'AI Code Review 服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        _record_failed_review('mr', {
+            'project_name': getattr(handler, 'repository_name', '') if handler else '',
+            'author': getattr(handler, 'author', '') if handler else '',
+            'source_branch': getattr(handler, 'source_branch', '') if handler else '',
+            'target_branch': getattr(handler, 'target_branch', '') if handler else '',
+            'commits': commits,
+            'additions': additions,
+            'deletions': deletions,
+            'url': getattr(handler, 'pull_request_url', '') if handler else '',
+            'webhook_data': webhook_data,
+            'url_slug': bitbucket_url_slug,
+            'platform': 'bitbucket',
+        }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)
 
@@ -618,6 +895,10 @@ def handle_bitbucket_push_event(webhook_data: dict, bitbucket_token: str, bitbuc
     :return:
     '''
     push_review_enabled = os.environ.get('PUSH_REVIEW_ENABLED', '0') == '1'
+    handler = None
+    commits = []
+    additions = 0
+    deletions = 0
     try:
         handler = BitbucketPushHandler(webhook_data, bitbucket_token, bitbucket_url)
         logger.info('Bitbucket Push event received')
@@ -667,5 +948,17 @@ def handle_bitbucket_push_event(webhook_data: dict, bitbucket_token: str, bitbuc
 
     except Exception as e:
         error_message = f'服务出现未知错误: {str(e)}\n{traceback.format_exc()}'
+        _record_failed_review('push', {
+            'project_name': getattr(handler, 'repository_name', '') if handler else '',
+            'author': getattr(handler, 'author', '') if handler else '',
+            'branch': getattr(handler, 'branch_name', '') if handler else '',
+            'commits': commits,
+            'additions': additions,
+            'deletions': deletions,
+            'url': getattr(handler, 'push_url', '') if handler else '',
+            'webhook_data': webhook_data,
+            'url_slug': bitbucket_url_slug,
+            'platform': 'bitbucket',
+        }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)

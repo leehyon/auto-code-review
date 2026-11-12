@@ -246,6 +246,17 @@ input[type="date"]:focus, select:focus, .btn:focus-visible {
 /* 强调边只用于「需要注意」的状态，不是装饰 */
 .stat-card.accent { border-left: 4px solid var(--clay); padding-left: 19px; }
 
+/* 可点击的统计卡：审查失败 —— 点它筛出失败行（重试入口就在那些行上） */
+.stat-card.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
+.stat-card.clickable:hover { border-color: var(--clay); }
+.stat-card.clickable.active {
+  border-color: var(--clay);
+  border-left: 4px solid var(--clay);
+  padding-left: 19px;
+  background: #FDF6F2;
+}
+.stat-card.clickable.active .stat-num { color: var(--clay); }
+
 .stat-num {
   display: block;
   font-family: var(--serif);
@@ -334,7 +345,7 @@ tbody tr:hover { background: var(--ivory); }
 td.mono { font-family: var(--mono); font-size: 12px; }
 td.muted { color: var(--gray-500); font-size: 12px; }
 td.author { color: var(--gray-700); }
-td.commit { color: var(--slate); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+td.commit { color: var(--slate); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* PR 链接列：编号用 mono，像报刊的交叉引用 */
 .pr-link {
@@ -352,6 +363,54 @@ td.nowrap { white-space: nowrap; }
 td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .score { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 13px; }
+
+/* 状态标记 */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--gray-500);
+  white-space: nowrap;
+}
+.status.failed { color: var(--rust); }
+.status.failed .dot { background: var(--rust); }
+
+.retry-btn {
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 4px 11px;
+  border: 1.5px solid var(--gray-300);
+  border-radius: 999px;
+  background: var(--white);
+  color: var(--slate);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.retry-btn:hover { border-color: var(--clay); color: var(--clay); }
+.retry-btn:disabled { opacity: 0.5; cursor: default; }
+.retry-btn:hover:disabled { border-color: var(--gray-300); color: var(--slate); }
+
+/* 操作列：行末放重试按钮，宽度固定，避免列宽随内容跳动 */
+.action-col { width: 88px; }
+/* 表格有横向滚动条，操作列右固定，重试入口始终可见 */
+th.action-col, td.action-cell {
+  position: sticky;
+  right: 0;
+  background: var(--white);
+}
+th.action-col { z-index: 2; }
+td.action-cell { text-align: right; }
+tbody tr:hover td.action-cell { background: var(--ivory); }
+/* 固定列的左侧分隔线，提示这里是浮在上面的 */
+td.action-cell::before, th.action-col::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: -1px;
+  width: 1px;
+  background: var(--gray-100);
+}
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .dot.good { background: var(--olive); }
 .dot.mid  { background: var(--clay); }
@@ -604,9 +663,10 @@ td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-s
         <span class="stat-num" id="averageScore">0.00</span>
         <span class="stat-label">平均分数</span>
       </div>
-      <div class="stat-card">
-        <span class="stat-num" id="statProjects">0</span>
-        <span class="stat-label">涉及项目</span>
+      <div class="stat-card clickable" id="failedCard" onclick="toggleFailedFilter()"
+           title="点击只看失败的审查（有重试入口的行）">
+        <span class="stat-num" id="statFailed">0</span>
+        <span class="stat-label">审查失败</span>
       </div>
       <div class="stat-card">
         <span class="stat-num" id="statAuthors">0</span>
@@ -634,11 +694,13 @@ td.branch { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-s
               <th>提交信息</th>
               <th>代码变更</th>
               <th>分数</th>
+              <th>状态</th>
               <th id="urlHeader">链接</th>
+              <th class="action-col">操作</th>
             </tr>
           </thead>
           <tbody id="dataTableBody">
-            <tr><td colspan="8" class="empty">加载中…</td></tr>
+            <tr><td colspan="10" class="empty">加载中…</td></tr>
           </tbody>
         </table>
       </div>

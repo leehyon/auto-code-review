@@ -43,10 +43,18 @@ class BaseReviewer(abc.ABC):
             raise Exception(f"提示词配置加载失败: {e}")
 
     def call_llm(self, messages: List[Dict[str, Any]]) -> str:
-        """调用 LLM 进行代码审核"""
-        logger.info(f"向 AI 发送代码 Review 请求, messages: {messages}")
+        """调用 LLM 进行代码审核
+
+        日志只记每个消息的长度，不记内容——整个 prompt 可能有几万 token，
+        打进日志会把日志文件撑到几十 MB，而且审查内容属于内部代码，不该外泄。
+        需要看具体内容时用 logger.debug 单独打开。
+        """
+        sizes = {m.get('role', '?'): len(m.get('content', '') or '') for m in messages}
+        logger.info(f"向 AI 发送代码 Review 请求: {sizes}")
+        logger.debug(f"Review 请求完整内容: {messages}")
         review_result = self.client.completions(messages=messages)
-        logger.info(f"收到 AI 返回结果: {review_result}")
+        logger.info(f"收到 AI 返回结果: {len(review_result)} 字符")
+        logger.debug(f"Review 返回完整内容: {review_result}")
         return review_result
 
     @abc.abstractmethod

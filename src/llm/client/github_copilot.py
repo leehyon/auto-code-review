@@ -63,6 +63,25 @@ API_MODE_RESPONSES = 'responses'
 API_MODE_CHAT_COMPLETIONS = 'chat_completions'
 DEFAULT_API_MODE = API_MODE_RESPONSES
 
+# 换 Copilot token 的接口是否可用。
+# business 订阅实测必然返回 403，原始 GitHub token 直接当 Bearer 反而可行。
+# 这是进程级的：每次审查都会新建 client，实例级缓存等于没缓存。
+_EXCHANGE_UNAVAILABLE = False
+
+
+def _set_exchange_unavailable():
+    global _EXCHANGE_UNAVAILABLE
+    _EXCHANGE_UNAVAILABLE = True
+
+
+def reset_exchange_cache():
+    """清掉「换 token 不可用」的进程级结论。
+
+    换了账号或 token 后要能重新试探，否则进程不重启就永远用旧结论。
+    """
+    global _EXCHANGE_UNAVAILABLE
+    _EXCHANGE_UNAVAILABLE = False
+
 
 class GitHubCopilotClient(BaseClient):
     """GitHub Copilot 客户端。"""
@@ -84,12 +103,15 @@ class GitHubCopilotClient(BaseClient):
         self.token_url = os.getenv("GITHUB_COPILOT_TOKEN_URL", DEFAULT_COPILOT_TOKEN_URL)
         self.user_url = os.getenv("GITHUB_COPILOT_USER_URL", DEFAULT_COPILOT_USER_URL)
         self.timeout = float(os.getenv("GITHUB_COPILOT_TIMEOUT", 180))
+        # 超时/网络错误自动重试次数。服务端偶发慢响应是常态，
+        # 重试一次比让整个审查失败划算得多。
+        self.max_retries = int(os.getenv("GITHUB_COPILOT_MAX_RETRIES", 1))
+        self.retry_backoff = float(os.getenv("GITHUB_COPILOT_RETRY_BACKOFF", 5))
 
         self._copilot_token: Optional[str] = None
         self._copilot_token_expires_at: float = 0.0
         # 换 token 接口是否可用。实测部分订阅类型（business）会返回 403，
         # 这时原始 GitHub token 直接当 Bearer 用反而是可行的，所以要记住失败只试一次。
-        self._exchange_unavailable = False
         self.client: Optional[OpenAI] = None
         self._client_token: Optional[str] = None
 
@@ -203,14 +225,15 @@ class GitHubCopilotClient(BaseClient):
                 if endpoint:
                     self.base_url = endpoint.rstrip("/")
 
-            if not self._exchange_unavailable:
+            if not _EXCHANGE_UNAVAILABLE:
                 token = self._exchange_token(source)
                 if token:
                     self._copilot_token = token
                     return token
-                # 换 token 不可用（实测部分订阅会返回 403），记住这次失败，
-                # 后面直接用原始 token 当 Bearer，不再重复请求
-                self._exchange_unavailable = True
+                # 换 token 不可用（实测 business 订阅必然返回 403），记住这次失败，
+                # 后面直接用原始 token 当 Bearer，不再重复请求。
+                # 缓存放在进程级：每次审查都会新建 client，实例级缓存等于没缓存。
+                _set_exchange_unavailable()
                 logger.warn("Falling back to using the GitHub token directly as the bearer token.")
 
             token = source
@@ -260,9 +283,24 @@ class GitHubCopilotClient(BaseClient):
             raise ValueError("No usable GitHub Copilot token, check GITHUB_COPILOT_TOKEN.")
         self._copilot_token = token
 
-        if self.api_mode == API_MODE_CHAT_COMPLETIONS:
-            return self._completions_chat(messages, model)
-        return self._completions_responses(messages, model)
+        # 超时和连接错误重试：Copilot 边缘节点偶发挂起是常态，
+        # 重试一次通常几十秒内就成功了。只有网络类错误才重试，
+        # 4xx（token 失效、模型不存在等）重试没有意义。
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                if self.api_mode == API_MODE_CHAT_COMPLETIONS:
+                    return self._completions_chat(messages, model)
+                return self._completions_responses(messages, model)
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_error = e
+                if attempt >= self.max_retries:
+                    break
+                logger.warning(f"GitHub Copilot request failed ({type(e).__name__}), "
+                               f"retrying in {self.retry_backoff:.0f}s "
+                               f"({attempt + 1}/{self.max_retries}).")
+                time.sleep(self.retry_backoff)
+        raise last_error
 
     def _completions_responses(self, messages: List[Dict[str, str]], model: str) -> str:
         """走 Responses API：POST {base}/responses，body 用 input。"""

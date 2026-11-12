@@ -81,17 +81,33 @@ def get_review_logs():
                 else "",
                 axis=1
             )
+
+        # 失败记录没有分数，不该拉低平均分——统计只算真正审完的
+        if 'status' in df.columns:
+            failed_mask = df['status'] != 'success'
+            if failed_mask.any():
+                # 必须先转成 object 列：pandas 的数值列赋 None 会变成 NaN，
+                # 而 NaN 序列化出来是 "score":NaN —— 不是合法 JSON，
+                # 浏览器 JSON.parse 直接抛错，整个 Dashboard 加载失败。
+                df['score'] = df['score'].astype(object)
+                df.loc[failed_mask, 'score'] = None
         
         # 转换为字典列表
         records = df.to_dict(orient='records')
         
         # 计算统计信息
         total = len(records)
-        average_score = df['score'].mean() if 'score' in df.columns and not df.empty else 0
-        
+        # score 列可能含 None（失败记录），要转回数值再求平均
+        numeric_scores = pd.to_numeric(df['score'], errors='coerce') if 'score' in df.columns else None
+        average_score = numeric_scores.mean() if numeric_scores is not None and not numeric_scores.empty else 0
+        failed = 0
+        if 'status' in df.columns:
+            failed = int((df['status'] != 'success').sum())
+
         return jsonify({
             'data': records,
             'total': total,
+            'failed': failed,
             'average_score': float(average_score) if not pd.isna(average_score) else 0
         })
     except Exception as e:
@@ -177,6 +193,32 @@ def get_review_stats():
     except Exception as e:
         logger.error(f"Failed to get review stats: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@ui_app.route('/api/review/retry', methods=['POST'])
+def retry_review():
+    """重跑一次失败的审查。
+
+    失败时审查没有在 PR 上留评论，只在 Dashboard 里留了一条 failed 记录，
+    这里用记录里保存的触发 payload 原样重放一次。
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        review_type = data.get('type', 'mr')
+        record_id = data.get('id')
+
+        if record_id is None:
+            return jsonify({'success': False, 'message': '缺少记录 id'}), 400
+        if review_type not in ('mr', 'push'):
+            return jsonify({'success': False, 'message': f'未知的记录类型: {review_type}'}), 400
+
+        from src.queue.worker import retry_failed_review
+        result = retry_failed_review(review_type, int(record_id))
+        status_code = 200 if result.get('success') else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error(f"Failed to retry review: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @ui_app.route('/api/review/filter-options', methods=['GET'])

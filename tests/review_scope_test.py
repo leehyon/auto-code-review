@@ -305,6 +305,24 @@ class ReviewInputCompositionTest(unittest.TestCase):
 class RepoContextReadTest(unittest.TestCase):
     """仓库级指令文件：默认自动发现，多项目不需要逐个配置。"""
 
+    def setUp(self):
+        # 这三个变量在真实 .env 里可能被设过（开关、清单、按项目覆盖），
+        # 测试不能依赖本机配置，统一在用例里显式指定。
+        self._env_backup = {k: os.environ.get(k) for k in (
+            'BITBUCKET_REPO_CONTEXT_ENABLED',
+            'BITBUCKET_REPO_CONTEXT_FILES',
+            'BITBUCKET_REPO_CONTEXT_PROJECT_FILES')}
+        os.environ['BITBUCKET_REPO_CONTEXT_ENABLED'] = '1'
+        os.environ['BITBUCKET_REPO_CONTEXT_FILES'] = ''
+        os.environ['BITBUCKET_REPO_CONTEXT_PROJECT_FILES'] = ''
+
+    def tearDown(self):
+        for key, value in self._env_backup.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
     def _handler(self):
         from src.bitbucket.webhook_handler import PullRequestHandler, BitbucketClient
         handler = PullRequestHandler.__new__(PullRequestHandler)

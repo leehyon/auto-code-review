@@ -124,7 +124,7 @@ function buildParams(filters) {
 // 加载数据
 async function loadData() {
     const tbody = document.getElementById('dataTableBody');
-    const colCount = 8;
+    const colCount = 10;
     try {
         const filters = readFilters();
         const params = buildParams(filters);
@@ -147,8 +147,7 @@ async function loadData() {
         document.getElementById('averageScore').textContent = avgScore.toFixed(2);
         // 强调边表示「需要看一眼」，不是装饰：平均分偏低时才出现
         document.getElementById('averageScoreCard').classList.toggle('accent', avgScore > 0 && avgScore < 70);
-        document.getElementById('statProjects').textContent =
-            new Set(currentData.map(i => i.project_name).filter(Boolean)).size;
+        document.getElementById('statFailed').textContent = result.failed || 0;
         document.getElementById('statAuthors').textContent =
             new Set(currentData.map(i => i.author).filter(Boolean)).size;
 
@@ -170,17 +169,28 @@ function renderTable(data) {
     const tbody = document.getElementById('dataTableBody');
     applyTableHeaders();
 
-    if (data.length === 0) {
-        const colCount = 8;
-        tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">当前筛选条件下没有记录</td></tr>`;
+    // 「只看失败」开关打开时，只渲染失败行 —— 重试入口就在这些行上
+    const rows = failedOnly ? data.filter(isFailedRow) : data;
+
+    if (rows.length === 0) {
+        const colCount = 10;
+        tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">${failedOnly ? '当前没有失败的审查' : '当前筛选条件下没有记录'}</td></tr>`;
         return;
     }
 
-    tbody.innerHTML = data.map(item => {
+    tbody.innerHTML = rows.map(item => {
         const score = item.score || 0;
         const level = score >= 80 ? 'good' : (score >= 60 ? 'mid' : 'bad');
 
         const sourceBranch = item.source_branch || item.branch || '';
+
+        // 失败记录：没有分数，状态列只留标记（失败原因放在 title 里），
+        // 重试入口放在行末的「操作」列
+        const failed = item.status && item.status !== 'success';
+        const statusCell = failed
+            ? `<span class="status failed" title="${escapeHtml(item.error_message || '审查失败')}">`
+              + `<span class="dot"></span>失败</span>`
+            : '<span class="status"><span class="dot good"></span>完成</span>';
 
         let row = `
             <tr>
@@ -190,13 +200,17 @@ function renderTable(data) {
                 <td class="muted nowrap">${escapeHtml(item.updated_at || '')}</td>
                 <td class="commit" title="${escapeHtml(item.commit_messages || '')}">${escapeHtml(item.commit_messages || '')}</td>
                 <td class="mono nowrap">${escapeHtml(item.delta || '')}</td>
-                <td class="nowrap"><span class="score"><span class="dot ${level}"></span>${score.toFixed(1)}</span></td>
+                <td class="nowrap">${failed ? '' : `<span class="score"><span class="dot ${level}"></span>${score.toFixed(1)}</span>`}</td>
+                <td class="nowrap">${statusCell}</td>
         `;
 
         const url = item.url || '';
         row += url
             ? `<td class="nowrap"><a href="${escapeHtml(url)}" target="_blank" rel="noopener" class="pr-link">${linkLabel(url, currentReviewType)}</a></td>`
             : '<td></td>';
+
+        // 行末的操作列：只有失败记录才有重试入口
+        row += `<td class="action-cell">${failed ? retryButton(item.id) : ''}</td>`;
 
         row += '</tr>';
         return row;
@@ -362,6 +376,52 @@ function linkLabel(url, reviewType) {
     }
     const number = extractPrNumber(url);
     return number ? `#${number}` : '查看 →';
+}
+
+// 重试按钮
+function retryButton(recordId) {
+    if (!recordId) return '';
+    return `<button class="retry-btn" onclick="doRetry(${recordId}, this)">重试</button>`;
+}
+
+// 只看失败的审查 —— 重试入口就在这些行上
+let failedOnly = false;
+
+// 判断一行是不是失败记录
+function isFailedRow(item) {
+    return !!(item.status && item.status !== 'success');
+}
+
+// 点击「审查失败」统计卡切换筛选
+function toggleFailedFilter() {
+    failedOnly = !failedOnly;
+    document.getElementById('failedCard').classList.toggle('active', failedOnly);
+    renderTable(currentData);
+}
+
+// 重跑一次失败的审查
+async function doRetry(recordId, button) {
+    if (button) {
+        button.disabled = true;
+        button.textContent = '重试中…';
+    }
+    try {
+        const response = await fetch('/api/review/retry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: currentReviewType, id: recordId })
+        });
+        const result = await response.json();
+        if (!result.success) {
+            alert('重试失败：' + (result.message || '未知错误'));
+        }
+    } catch (error) {
+        console.error('重试请求失败:', error);
+        alert('重试请求失败：' + error.message);
+    } finally {
+        // 无论成败都刷新列表：重试成功会变成成功记录，还是失败会换一条新的失败记录
+        await loadData();
+    }
 }
 
 // HTML 转义
