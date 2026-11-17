@@ -504,8 +504,9 @@ th.action-col, td.action-cell {
   position: sticky;
   right: 0;
 }
-th.action-col { z-index: 2; background: var(--gray-100); }
-td.action-cell { text-align: right; background: var(--white); }
+th.action-col { z-index: 2; background: var(--gray-100); text-align: center; }
+/* 操作列表头居中，按钮也跟着居中 —— 否则这一列表头和按钮会错开。 */
+td.action-cell { text-align: center; background: var(--white); }
 tbody tr:hover td.action-cell { background: var(--ivory); }
 /* 固定列的左侧分隔线，提示这里是浮在上面的 */
 td.action-cell::before, th.action-col::before {
