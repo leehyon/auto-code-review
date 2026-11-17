@@ -180,9 +180,30 @@ class FailedReviewRecordTest(unittest.TestCase):
 
     def test_record_failed_review_survives_missing_context(self):
         """上下文缺失时也不能抛异常——失败记录本身写不进去就失去重试入口。"""
-        from src.queue.worker import _record_failed_review
-        # 不该抛
-        _record_failed_review('mr', {}, '某个错误')
+        import tempfile
+        from src.service.db_factory import DatabaseFactory
+        from src.service.review_service import ReviewService
+
+        # 必须给一个临时库：这个用例会真的写一行失败记录。
+        # 不隔离的话写的是 data/data.db —— 那是生产库，
+        # 跑一次测试就给 Dashboard 添一条空记录（项目名/作者/链接全空）。
+        tmpdir = tempfile.mkdtemp()
+        db_file = os.path.join(tmpdir, 'test.db')
+        original = os.environ.copy()
+        os.environ.update({'DB_TYPE': 'sqlite', 'DB_FILE': db_file})
+        try:
+            DatabaseFactory.reload_config()
+            ReviewService.init_db()
+
+            from src.queue.worker import _record_failed_review
+            # 不该抛
+            _record_failed_review('mr', {}, '某个错误')
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+            DatabaseFactory.reload_config()
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 class RetryDispatchTest(unittest.TestCase):

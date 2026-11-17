@@ -176,9 +176,7 @@ class ReviewService:
                 conn.commit()
                 print(f"[ReviewService] MR review log inserted successfully: {entity.project_name} by {entity.author}")
         except Exception as e:
-            import traceback
-            print(f"[ReviewService] Error inserting MR review log: {e}")
-            print(f"[ReviewService] Traceback: {traceback.format_exc()}")
+            logger.error(f"[ReviewService] Error inserting MR review log: {e}", exc_info=True)
 
     @staticmethod
     def get_mr_review_logs(authors: list = None, project_names: list = None, updated_at_gte: int = None,
@@ -239,7 +237,7 @@ class ReviewService:
                     INSERT INTO push_review_log (project_name, author, branch, updated_at,
                         commit_messages, score, review_result, additions, deletions, url,
                         status, error_message, platform, webhook_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (entity.project_name, entity.author, entity.branch,
                       entity.updated_at, entity.commit_messages, entity.score,
                       extract_summary(entity.review_result),
@@ -252,9 +250,7 @@ class ReviewService:
                 conn.commit()
                 print(f"[ReviewService] Push review log inserted successfully: {entity.project_name} by {entity.author}")
         except Exception as e:
-            import traceback
-            print(f"[ReviewService] Error inserting push review log: {e}")
-            print(f"[ReviewService] Traceback: {traceback.format_exc()}")
+            logger.error(f"[ReviewService] Error inserting push review log: {e}", exc_info=True)
 
     @staticmethod
     def _dump_webhook_data(webhook_data) -> str:

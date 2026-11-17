@@ -2,6 +2,11 @@
 let currentData = [];
 let currentReviewType = 'mr';
 
+// 已生效的筛选条件（最近一次 loadData 用过的那一份）。
+// 统计图用这个而不是现读输入框：输入框里的日期改了但没点「查询」时，
+// 记录表、统计卡、统计图必须显示同一批数据，不能三处各说各话。
+let appliedFilters = null;
+
 // 默认筛选范围：最近 30 天
 const DEFAULT_RANGE_DAYS = 30;
 
@@ -29,12 +34,18 @@ document.addEventListener('DOMContentLoaded', function() {
             currentReviewType = this.value;
             applyTableHeaders();
             // 重新加载筛选器选项和数据
-            loadFilterOptions().then(() => loadData());
+            loadFilterOptions().then(() => {
+                // 切类型后作者/项目下拉框的选项变了（原来的选中项可能已经不存在），
+                // 重新读一次输入框，保证表头、统计卡、图表用的是同一份筛选条件
+                const filters = readFilters();
+                appliedFilters = filters;
+                return refreshVisibleViews(filters);
+            });
         });
     });
 
     // 初始加载筛选器选项和数据
-    loadFilterOptions().then(() => loadData());
+    loadFilterOptions().then(() => applyFilters());
 
     // 定时更新（每30秒）
     setInterval(updateLastUpdateTime, 30000);
@@ -79,6 +90,38 @@ function switchTab(tab) {
     if (tab === 'charts') {
         loadCharts();
     }
+}
+
+// 统计图当前是不是可见的
+function isChartsVisible() {
+    const el = document.getElementById('tabContentCharts');
+    return !!el && !el.classList.contains('hidden');
+}
+
+// 刷新当前可见的视图。
+//
+// 统计卡（记录数 / 平均分 / 失败数 / 参与人数）在两个 tab 上方，是共用的，
+// 所以筛选条件或审查类型一变，记录数据（loadData）必须重载。
+//
+// 统计图是另一份请求，只在「统计」tab 上可见。之前审查类型切换只调 loadData，
+// 于是停在统计页时点 Push / Merge Request：上面的统计卡变成了新类型的数据，
+// 下面的图表还留在旧类型的数据上 —— 同一个页面里两套数字对不上。
+//
+// filters 省略时沿用已生效的条件（appliedFilters），
+// 保证记录表、统计卡、统计图三者永远来自同一份筛选条件。
+async function refreshVisibleViews(filters) {
+    await loadData(filters);
+    if (isChartsVisible()) {
+        await loadCharts(filters);
+    }
+}
+
+// 应用输入框里的筛选条件（查询按钮）。
+// 输入框改完不点查询，页面上的一切都还是上一次的筛选结果。
+async function applyFilters() {
+    const filters = readFilters();
+    appliedFilters = filters;
+    await refreshVisibleViews(filters);
 }
 
 // 按审查类型切换表头
@@ -133,12 +176,15 @@ function buildParams(filters) {
 }
 
 // 加载数据
-async function loadData() {
+// filters 省略时用已生效的那一份（appliedFilters），
+// 避免把输入框里改了但没点「查询」的值偷带进请求。
+async function loadData(filters) {
     const tbody = document.getElementById('dataTableBody');
     const colCount = 10;
     try {
-        const filters = readFilters();
-        const params = buildParams(filters);
+        const active = filters || appliedFilters || readFilters();
+        appliedFilters = active;
+        const params = buildParams(active);
 
         // 显示加载状态
         tbody.innerHTML = `<tr><td colspan="${colCount}" class="empty">${t('state.loading')}</td></tr>`;
@@ -295,10 +341,12 @@ function updateFilterOptions(data) {
 }
 
 // 加载图表
-async function loadCharts() {
+// filters 省略时沿用已生效的条件（appliedFilters），
+// 保证统计图和记录表是同一批数据。
+async function loadCharts(filters) {
     try {
-        const filters = readFilters();
-        const params = buildParams(filters);
+        const active = filters || appliedFilters || readFilters();
+        const params = buildParams(active);
 
         const response = await fetch(`/api/review/stats?${params.toString()}`);
         const result = await response.json();
@@ -410,11 +458,7 @@ function renderBars(containerId, data, kind) {
 // 语言切换后的回调：动态生成的表格和图表要重画
 function onLanguageChanged() {
     applyTableHeaders();
-    loadData();
-    if (document.getElementById('tabContentCharts')
-        && !document.getElementById('tabContentCharts').classList.contains('hidden')) {
-        loadCharts();
-    }
+    refreshVisibleViews();
 }
 
 // 重置筛选器
@@ -430,7 +474,7 @@ function resetFilters() {
     document.getElementById('filterNotice').classList.add('hidden');
     applyTableHeaders();
 
-    loadFilterOptions().then(() => loadData());
+    loadFilterOptions().then(() => applyFilters());
 }
 
 // 从 PR URL 里提取编号，各平台路径都兼容：
