@@ -252,7 +252,7 @@ function renderTable(data) {
 
         let row = `
             <tr>
-                <td class="mono nowrap">${escapeHtml(item.project_name || '')}</td>
+                <td class="mono project-cell" title="${escapeHtml(item.project_name || '')}">${escapeHtml(item.project_name || '')}</td>
                 <td class="author nowrap">${escapeHtml(item.author || '')}</td>
                 <td class="mono branch" title="${escapeHtml(sourceBranch)}">${escapeHtml(sourceBranch)}</td>
                 <td class="muted nowrap">${escapeHtml(item.updated_at || '')}</td>
@@ -360,6 +360,9 @@ async function loadCharts(filters) {
         renderBars('authorCountChart', result.author_counts || [], 'count');
         renderBars('authorScoreChart', result.author_scores || [], 'score');
         renderBars('authorCodeLineChart', result.author_code_lines || [], 'lines');
+
+        // 5 张图的标签列宽度统一，横条起点才对得齐
+        alignBarLabelWidth();
     } catch (error) {
         console.error('加载图表失败:', error);
     }
@@ -453,6 +456,35 @@ function renderBars(containerId, data, kind) {
                 <span class="bar-value">${shown}</span>
             </div>`;
     }).join('');
+}
+
+// 统一所有图的标签列宽度，让横条起点对齐。
+//
+// 每张图各算各的（auto）时，项目图标签占 150px、人员图只占 58px，
+// 横条起点就错开了 —— 上下两张图看同一条横条，长度对不上。
+// 量出所有标签里最宽的那个，作为 5 张图共用的标签列宽度。
+function alignBarLabelWidth() {
+    const labels = document.querySelectorAll('.bars .bar-label');
+    if (labels.length === 0) return;
+
+    // 量之前先把标签列放开成 auto（各图按自己的内容排），
+    // 否则列已经被上一次算出的值锁死，放开 max-width 也量不到真实宽度 ——
+    // 量到的还是那个旧值，越量越锁死。
+    const root = document.documentElement;
+    const previous = root.style.getPropertyValue('--bar-label-w');
+    root.style.setProperty('--bar-label-w', 'auto');
+
+    let needed = 0;
+    labels.forEach(el => {
+        needed = Math.max(needed, el.getBoundingClientRect().width);
+    });
+
+    if (needed <= 0) {
+        root.style.setProperty('--bar-label-w', previous || 'auto');
+        return;
+    }
+    // 不超过 CSS 里的 150px 上限 —— 名字太长就截断，横条不能被挤没
+    root.style.setProperty('--bar-label-w', `${Math.min(needed, 150)}px`);
 }
 
 // 语言切换后的回调：动态生成的表格和图表要重画

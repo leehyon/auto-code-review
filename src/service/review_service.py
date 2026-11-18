@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.entity.review_entity import MergeRequestReviewEntity, PushReviewEntity
+from src.entity.review_entity import MergeRequestReviewEntity, PushReviewEntity, normalize_author
 from src.service.db_factory import get_db_connection, DatabaseFactory
 from src.utils.log import logger
 from src.utils.review_summary import extract_summary
@@ -179,6 +179,37 @@ class ReviewService:
             logger.error(f"[ReviewService] Error inserting MR review log: {e}", exc_info=True)
 
     @staticmethod
+    def _author_normalized_sql() -> str:
+        """作者名归整后的 SQL 表达式。
+
+        语义必须和 review_entity.normalize_author 完全一致：
+        取第一个点之前的部分；点开头（'.foo'）保持原样；没有点就是原样。
+
+        为什么要在 SQL 里归整：筛选框给的是归整后的名字（yingchao），
+        而库里存着归整前的老数据（yingchao.han）。不归整就查不到老记录。
+        归整放在 Python 侧会造成「显示是归整后的名字，筛它却查不到」的错位。
+        """
+        if DatabaseFactory.is_mysql():
+            return ("CASE WHEN LOCATE('.', author) > 1 "
+                    "THEN SUBSTRING(author, 1, LOCATE('.', author) - 1) "
+                    "ELSE author END")
+        return ("CASE WHEN INSTR(author, '.') > 1 "
+                "THEN SUBSTR(author, 1, INSTR(author, '.') - 1) "
+                "ELSE author END")
+
+    @staticmethod
+    def _normalize_author_column(df: pd.DataFrame) -> pd.DataFrame:
+        """把查询结果的 author 列归整。
+
+        库里可能有归整前写入的老数据（yingchao.han），显示和统计都要归整，
+        否则同一个人会在统计里裂成两项。NaN 原样保留（不是字符串），
+        下拉框取 unique 时还要靠 dropna 把空值滤掉。
+        """
+        if 'author' in df.columns:
+            df['author'] = df['author'].map(normalize_author)
+        return df
+
+    @staticmethod
     def get_mr_review_logs(authors: list = None, project_names: list = None, updated_at_gte: int = None,
                            updated_at_lte: int = None) -> pd.DataFrame:
         """获取符合条件的合并请求审核日志"""
@@ -197,8 +228,10 @@ class ReviewService:
 
                 if authors:
                     placeholders = ','.join([ph] * len(authors))
-                    query += f" AND author IN ({placeholders})"
-                    params.extend(authors)
+                    query += f" AND {ReviewService._author_normalized_sql()} IN ({placeholders})"
+                    # 参数也要归整：库里的值归整后才比对，
+                    # 参数不归整的话，按老名字（yingchao.han）筛就查不到。
+                    params.extend([normalize_author(a) for a in authors])
 
                 if project_names:
                     # 项目名统一小写存储，筛选也按小写比较，
@@ -220,7 +253,7 @@ class ReviewService:
                 # 使用pandas读取数据
                 pandas_conn = conn.get_connection_for_pandas()
                 df = pd.read_sql_query(sql=query, con=pandas_conn, params=params)
-                return df
+                return ReviewService._normalize_author_column(df)
         except Exception as e:
             logger.error(f"Error retrieving review logs: {e}", exc_info=True)
             return pd.DataFrame()
@@ -394,8 +427,9 @@ class ReviewService:
 
                 if authors:
                     placeholders = ','.join([ph] * len(authors))
-                    query += f" AND author IN ({placeholders})"
-                    params.extend(authors)
+                    query += f" AND {ReviewService._author_normalized_sql()} IN ({placeholders})"
+                    # 参数也要归整，理由同 get_mr_review_logs
+                    params.extend([normalize_author(a) for a in authors])
 
                 if project_names:
                     # 项目名统一小写存储，筛选也按小写比较，
@@ -417,7 +451,7 @@ class ReviewService:
                 # 使用pandas读取数据
                 pandas_conn = conn.get_connection_for_pandas()
                 df = pd.read_sql_query(sql=query, con=pandas_conn, params=params)
-                return df
+                return ReviewService._normalize_author_column(df)
         except Exception as e:
             logger.error(f"Error retrieving push review logs: {e}", exc_info=True)
             return pd.DataFrame()

@@ -1,6 +1,27 @@
 import re
 
 
+def normalize_author(author):
+    """作者名归整：只保留第一个点之前的部分。
+
+    Bitbucket 的用户名是「名.姓」形式（yingchao.han），别处是短名（yingchao）。
+    两种写法指的是同一个人，不归整的话统计里会裂成两项、筛选框里也是两条。
+
+    语义必须和 SQL 里的归整表达式完全一致（见 review_service._AUTHOR_NORMALIZED_SQL），
+    否则显示出来的名字和筛选框选不中的名字会不是一回事。
+
+    非字符串（None / NaN）原样返回，不归成空串 —— 空串会在筛选框里变成一个空选项。
+    """
+    if not isinstance(author, str):
+        return author
+    if '.' in author:
+        head = author.split('.', 1)[0]
+        # 开头就是点的（'.foo'）不要归成空串
+        if head:
+            return head
+    return author
+
+
 # 合并提交的标题特征。各平台的措辞不同，兜底用这些模式判断。
 _MERGE_SUBJECT_RE = re.compile(
     r'^merge\s+(branch|pull request|remote-tracking branch|tag|commit|revert)\b',
@@ -77,7 +98,9 @@ class MergeRequestReviewEntity:
         # 是大写，slug 是小写；GitLab 用的是人类可读名），不统一的话同一个项目
         # 会在统计和筛选里裂成好几项。
         self.project_name = (project_name or '').lower()
-        self.author = author
+        # 作者名同样归整：Bitbucket 的用户名是「名.姓」（yingchao.han），
+        # 别的平台是短名（yingchao），不归整同一个人会裂成两项。
+        self.author = normalize_author(author)
         self.source_branch = source_branch
         self.target_branch = target_branch
         self.updated_at = updated_at
@@ -112,7 +135,8 @@ class PushReviewEntity:
                  url: str = '', status: str = 'success', error_message: str = '', platform: str = ''):
         # 同样统一小写，理由同 MergeRequestReviewEntity
         self.project_name = (project_name or '').lower()
-        self.author = author
+        # 作者名同样归整，理由同 MergeRequestReviewEntity
+        self.author = normalize_author(author)
         self.branch = branch
         self.updated_at = updated_at
         self.commits = commits

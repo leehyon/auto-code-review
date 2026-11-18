@@ -442,6 +442,16 @@ td.muted { color: var(--gray-500); font-size: 12px; }
 td.author { color: var(--gray-700); }
 td.commit { color: var(--slate); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 项目名列：项目名有 30+ 字符的（sw-7165-gsa-vw-csp31-elmos523.63），
+   不限宽会把表格撑到超出容器，右侧冒出横向滚动条。
+   宽度上限和分支列一致，超出部分用省略号（完整名字在 title 里）。 */
+td.project-cell {
+  max-width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* PR 链接列：编号用 mono，像报刊的交叉引用 */
 .pr-link {
   font-family: var(--mono);
@@ -569,19 +579,34 @@ td.action-cell::before, th.action-col::before {
   margin: 0 0 16px;
 }
 
-.bars { display: flex; flex-direction: column; gap: 11px; }
+/* 横条图的行是网格：标签 | 横条 | 数值。
+   标签列宽度由 --bar-label-w 给出，5 张图共用同一个值（app.js 渲染后测量填入）——
+   每张图各算各的（auto）的话，项目图标签占 150px、人员图只占 58px，
+   横条起点就错开了，跨图比较长度时对不齐。
 
-.bar-row {
+   .bars 自己当网格容器、.bar-row 用 display:contents 把单元格交给它排 ——
+   这样同一张图里所有行共用同一条列轨道，行与行之间才对得齐。 */
+.bars {
   display: grid;
-  grid-template-columns: minmax(90px, 190px) 1fr 54px;
+  grid-template-columns: var(--bar-label-w, auto) 1fr 54px;
+  column-gap: 14px;
+  row-gap: 11px;
   align-items: center;
-  gap: 14px;
 }
+
+.bar-row { display: contents; }
+
+/* 没有数据时的提示要占满整行 */
+.bars .no-data { grid-column: 1 / -1; }
 
 .bar-label {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--gray-700);
+  /* 项目名有 30+ 字符的（sw-7165-gsa-vw-csp31-elmos523.63），
+     标签列不能跟着涨 —— 涨了横条就被挤短，同一张图里长名字和短名字
+     的横条没法比长度。上限 150px，超出部分截断（完整名字在 title 里）。 */
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
