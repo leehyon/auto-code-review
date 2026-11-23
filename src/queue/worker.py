@@ -7,6 +7,7 @@ from src.event.event_manager import event_manager
 from src.gitlab.webhook_handler import filter_changes, MergeRequestHandler, PushHandler
 from src.github.webhook_handler import filter_changes as filter_github_changes, PullRequestHandler as GithubPullRequestHandler, PushHandler as GithubPushHandler
 from src.gitea.webhook_handler import filter_changes as filter_gitea_changes, PullRequestHandler as GiteaPullRequestHandler, PushHandler as GiteaPushHandler
+from src.gitea.webhook_handler import filter_changes as filter_gitea_changes, PullRequestHandler as GiteaPullRequestHandler, PushHandler as GiteaPushHandler
 from src.bitbucket.webhook_handler import filter_changes as filter_bitbucket_changes, PullRequestHandler as BitbucketPullRequestHandler, PushHandler as BitbucketPushHandler
 from src.service.review_service import ReviewService
 from src.utils.code_reviewer import CodeReviewer
@@ -996,3 +997,4 @@ def handle_bitbucket_push_event(webhook_data: dict, bitbucket_token: str, bitbuc
         }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)
+

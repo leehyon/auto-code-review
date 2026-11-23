@@ -264,3 +264,10 @@ review_profiles:
 
       For generated ARXML, recommend changing its source model or generation
       configuration rather than editing the generated file directly.
+
+      Standards and language-specific expectations:
+      - MISRA C and MISRA C++ rule violations, AUTOSAR C++14 guidelines and
+        ISO 26262 implications where they apply.
+      - Modern C++ specifics: RAII, ownership and lifetime of resources,
+        and correct use of C++11/14/17 features.
+

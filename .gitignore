@@ -15,3 +15,6 @@ config/.env
 __pycache__/
 .cursorignore
 test_*.py
+
+# 本地 IDE 配置（含浏览器缓存数据库，别提交）
+.vscode/

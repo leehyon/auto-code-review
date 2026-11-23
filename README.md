@@ -226,9 +226,10 @@ BITBUCKET_VERIFY_SSL=0
 
 ### 其他平台
 
-GitLab / GitHub / Gitea 的 Webhook 配置方式见
-[docs/faq.md](docs/faq.md)（问题 6~9）。平台识别方式与 Bitbucket 不同，
-但配置项结构一致，详见 `config/.env.dist`。
+GitLab / GitHub / Gitea 的 Access Token 和 Webhook 配置步骤见
+[docs/PLATFORM_SETUP.md](docs/PLATFORM_SETUP.md)。
+平台识别方式与 Bitbucket 不同，但配置项结构一致，详见 `config/.env.dist`；
+配置不生效、Token 无效等问题见 [docs/faq.md](docs/faq.md)。
 
 ## 配置消息推送
 
@@ -391,6 +392,7 @@ REVIEW_MENTION_USERS=junchu1,alice
 ## 相关文档
 
 - [docs/faq.md](docs/faq.md) —— 常见问题解答
+- [docs/PLATFORM_SETUP.md](docs/PLATFORM_SETUP.md) —— GitLab / GitHub / Gitea 的配置步骤
 - [docs/PLATFORM_COMPARISON.md](docs/PLATFORM_COMPARISON.md) —— 各平台处理差异对比
 - [docs/SYSTEMD_DEPLOY.md](docs/SYSTEMD_DEPLOY.md) —— systemd 常驻部署
 - [`config/.env.dist`](config/.env.dist) —— 完整环境变量清单
