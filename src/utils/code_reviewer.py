@@ -1,12 +1,13 @@
 import abc
 import os
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Union
 
 import yaml
 from jinja2 import Template
 
 from src.llm.factory import Factory
+from src.utils.comment_format import build_review_comment
 from src.utils.log import logger
 from src.utils.token_util import count_tokens, truncate_text_by_tokens
 
@@ -42,10 +43,18 @@ class BaseReviewer(abc.ABC):
             raise Exception(f"提示词配置加载失败: {e}")
 
     def call_llm(self, messages: List[Dict[str, Any]]) -> str:
-        """调用 LLM 进行代码审核"""
-        logger.info(f"向 AI 发送代码 Review 请求, messages: {messages}")
+        """调用 LLM 进行代码审核
+
+        日志只记每个消息的长度，不记内容——整个 prompt 可能有几万 token，
+        打进日志会把日志文件撑到几十 MB，而且审查内容属于内部代码，不该外泄。
+        需要看具体内容时用 logger.debug 单独打开。
+        """
+        sizes = {m.get('role', '?'): len(m.get('content', '') or '') for m in messages}
+        logger.info(f"向 AI 发送代码 Review 请求: {sizes}")
+        logger.debug(f"Review 请求完整内容: {messages}")
         review_result = self.client.completions(messages=messages)
-        logger.info(f"收到 AI 返回结果: {review_result}")
+        logger.info(f"收到 AI 返回结果: {len(review_result)} 字符")
+        logger.debug(f"Review 返回完整内容: {review_result}")
         return review_result
 
     @abc.abstractmethod
@@ -54,52 +63,50 @@ class BaseReviewer(abc.ABC):
         pass
 
 
+# 源码扩展名：预算不够时优先保留这些文件
+SOURCE_EXTENSIONS = {
+    '.c', '.h', '.cpp', '.hpp', '.cc', '.cxx',
+    '.py', '.java', '.go', '.js', '.jsx', '.ts', '.tsx', '.vue', '.php',
+}
+
+# 生成的模型/配置扩展名：优先级最低，预算不够时先砍这些
+DEFAULT_LOW_PRIORITY_EXTENSIONS = '.arxml,.xml'
+
+
 class CodeReviewer(BaseReviewer):
     """代码 Diff 级别的审查"""
 
     def __init__(self):
         # 不预加载通用提示词，而是动态加载
         self.client = Factory().getClient()
-        # 语言到提示词映射
-        self.language_prompts = {
-            'python': 'python_review_prompt',
-            'javascript': 'javascript_review_prompt',
-            'typescript': 'javascript_review_prompt',
-            'java': 'java_review_prompt',
-            'go': 'go_review_prompt',
-            'php': 'php_review_prompt',
-            'cpp': 'cpp_review_prompt',
-            'c': 'cpp_review_prompt',
-            'vue': 'vue3_review_prompt',
-            'js': 'javascript_review_prompt',
-            'ts': 'javascript_review_prompt',
-            'py': 'python_review_prompt',
+        # 上一次审查的覆盖度信息（哪些文件真正送进了模型），供评论体使用
+        self.last_review_scope = {}
+        # 语言 -> 领域。领域决定用哪一段方向提示，方向给的是关注方向而不是
+        # 逐条检查清单——穷举清单会诱导模型为凑满格式而编问题。
+        # 同一个领域可以覆盖多种语言（automotive 同时管 C / C++ / ARXML）。
+        self.language_domains = {
+            'python': ['python'],
+            'javascript': ['frontend'],
+            'typescript': ['frontend'],
+            'vue': ['frontend'],
+            'java': ['java'],
+            'go': ['go'],
+            'c': ['automotive'],
+            'cpp': ['automotive'],
+            'autosar': ['automotive'],
+            'default': ['general'],
         }
 
     def _detect_language_from_diff(self, diffs_text: str) -> str:
         """从diff文本中检测主要编程语言"""
-        # 文件扩展名到语言的映射
-        file_extensions = {
-            '.py': 'python',
-            '.js': 'javascript',
-            '.ts': 'typescript',
-            '.jsx': 'javascript',
-            '.tsx': 'typescript',
-            '.vue': 'vue',
-            '.java': 'java',
-            '.go': 'go',
-            '.php': 'php',
-            '.cpp': 'cpp',
-            '.cc': 'cpp',
-            '.cxx': 'cpp',
-            '.c': 'c',
-            '.h': 'cpp',
-            '.hpp': 'cpp',
-        }
-        
+        file_extensions = self._file_extension_languages()
+
         # 统计各种语言的文件数量
         language_counts = {}
         vue3_indicators = 0
+        # 是否从 diff 中解析到了文件路径。只要解析到了路径，语言就应该由扩展名决定，
+        # 不能退回内容启发式——否则 arxml/XML 里的关键字会被误判成 JavaScript/Python
+        detected_file_paths = False
         
         # 尝试多种文件路径模式
         file_patterns = [
@@ -124,6 +131,7 @@ class CodeReviewer(BaseReviewer):
                     break
             
             if file_path:
+                detected_file_paths = True
                 # 获取文件扩展名
                 ext = os.path.splitext(file_path)[1].lower()
                 if ext in file_extensions:
@@ -142,7 +150,8 @@ class CodeReviewer(BaseReviewer):
                 logger.info(f"检测到Vue3特征: {line.strip()}")
         
         # 如果没有通过文件路径检测到语言，尝试从内容中检测
-        if not language_counts:
+        # 只有在完全没有解析到文件路径时才允许内容启发式
+        if not language_counts and not detected_file_paths:
             # 检查是否包含Vue相关的内容
             if any(indicator in diffs_text.lower() for indicator in [
                 '<template>', '<script>', '<style>', 'vue', '.vue'
@@ -178,69 +187,305 @@ class CodeReviewer(BaseReviewer):
             
             logger.info(f"检测到主要编程语言: {primary_language}")
             return primary_language
-        
-        logger.info("未检测到特定编程语言，使用通用审查提示词")
+
+        if detected_file_paths:
+            logger.info("已识别出变更文件，但其扩展名不在语言映射表中，使用通用审查提示词")
+        else:
+            logger.info("未检测到特定编程语言，使用通用审查提示词")
         return 'default'
 
-    def _get_appropriate_prompt(self, diffs_text: str) -> str:
-        """根据代码内容选择合适的提示词"""
-        detected_lang = self._detect_language_from_diff(diffs_text)
-        prompt_key = self.language_prompts.get(detected_lang, 'vue3_review_prompt')
-        
-        # 添加详细的调试日志
-        logger.info(f"语言检测结果: {detected_lang}")
-        logger.info(f"语言映射: {detected_lang} -> {prompt_key}")
-        logger.info(f"可用的语言映射: {self.language_prompts}")
-        
-        # 临时修复：强制Vue文件使用Vue3提示词
-        if detected_lang == 'vue':
-            logger.info("检测到Vue文件，强制使用vue3_review_prompt")
-            return 'vue3_review_prompt'
-        
-        return prompt_key
+    @staticmethod
+    def _low_priority_extensions() -> set:
+        """低优先级（生成类）文件的扩展名，可用环境变量覆盖。"""
+        raw = os.getenv('REVIEW_LOW_PRIORITY_EXTENSIONS',
+                        DEFAULT_LOW_PRIORITY_EXTENSIONS)
+        return {ext.strip().lower() for ext in raw.split(',') if ext.strip()}
 
-    def _load_language_specific_prompts(self, prompt_key: str, style="professional") -> Dict[str, Any]:
-        """加载语言特定的提示词配置"""
+    @classmethod
+    def _file_review_priority(cls, path: str) -> int:
+        """文件审查优先级，数字越小越先进入模型。
+
+        0 = 源码；1 = 其它；2 = 生成的模型/配置（如 .arxml、.xml）。
+        """
+        ext = os.path.splitext(path or '')[1].lower()
+        if ext in SOURCE_EXTENSIONS:
+            return 0
+        if ext in cls._low_priority_extensions():
+            return 2
+        return 1
+
+    @classmethod
+    def _sort_changes_by_priority(cls, changes: list) -> list:
+        """按优先级排序：源码在前，生成的 arxml/xml 在后。
+
+        预算不够被顺序截断时，靠后的文件先被砍掉，源码尽量完整进入模型。
+        稳定排序，同优先级保持原有顺序。
+        """
+        return sorted(changes, key=lambda c: cls._file_review_priority(
+            c.get('new_path') or c.get('old_path') or ''))
+
+    def _detect_file_languages(self, diffs_text: str) -> list:
+        """
+        逐文件识别语言，返回 ``[(文件路径, 语言), ...]``。
+
+        混合语言的提交必须逐文件判定：整份 diff 选一套检查点会让 C++ 文件套上 C 的规则、
+        arxml 文件拿不到 AUTOSAR 的检查点。
+        """
+        file_extensions = self._file_extension_languages()
+        file_patterns = [
+            r'^\+\+\+ b/(.+)$',   # Git diff 格式: +++ b/file.vue
+            r'^\+\+\+ (.+)$',     # 简化格式: +++ file.vue
+            r'^--- a/(.+)$',        # Git diff 格式: --- a/file.vue
+            r'^--- (.+)$',          # 简化格式: --- file.vue
+            r'^diff --git a/(.+) b/(.+)$',
+        ]
+
+        seen = set()
+        result = []
+        for line in diffs_text.split('\n'):
+            file_path = None
+            for pattern in file_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    file_path = match.group(1)
+                    break
+            if not file_path:
+                continue
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext not in file_extensions:
+                continue
+            if file_path in seen:
+                continue
+            seen.add(file_path)
+            lang = file_extensions[ext]
+            result.append((file_path, lang))
+            logger.info(f"文件语言判定: {file_path} -> {lang}")
+        return result
+
+    def _file_extension_languages(self) -> dict:
+        """扩展名 -> 语言。"""
+        return {
+            '.py': 'python', '.js': 'javascript', '.ts': 'typescript',
+            '.jsx': 'javascript', '.tsx': 'typescript', '.vue': 'vue',
+            '.java': 'java', '.go': 'go', '.php': 'php',
+            '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp', '.c': 'c',
+            '.h': 'cpp', '.hpp': 'cpp', '.arxml': 'autosar',
+            # .xml 不参与语言/领域判定：它可能是 pom.xml、Jenkins 配置等，
+            # 归到 automotive 会带进无关的 AUTOSAR 方向。
+        }
+
+    def _domains_for(self, languages: list) -> list:
+        """本次变更涉及哪些领域。"""
+        domains = []
+        for lang in languages:
+            for domain in self.language_domains.get(lang, self.language_domains['default']):
+                if domain not in domains:
+                    domains.append(domain)
+        return domains or ['general']
+
+    def _build_profile_checks(self, file_languages: list, templates: dict) -> str:
+        """
+        按本次变更涉及的领域，拼接方向提示。
+
+        一个领域一段（例如 automotive 一段覆盖 C / C++ / ARXML），不去逐条列举
+        检查项；模型自己按语言和领域做工程判断，没证据就不报。
+        """
+        profiles = templates.get("review_profiles", {})
+        domains = []
+        for _path, lang in file_languages:
+            for domain in self.language_domains.get(lang, self.language_domains['default']):
+                if domain not in domains:
+                    domains.append(domain)
+
+        if not domains:
+            domains = ['general']
+
+        blocks = []
+        for domain in domains:
+            text = (profiles.get(domain) or {}).get('checks', '').strip()
+            if text:
+                blocks.append(text)
+        return '\n\n'.join(blocks)
+
+    def _load_templates(self) -> dict:
+        """读取提示词模板文件。"""
         prompt_templates_file = "config/prompt_templates.yml"
         try:
             with open(prompt_templates_file, "r", encoding="utf-8") as file:
-                prompts = yaml.safe_load(file).get(prompt_key, {})
-
-                def render_template(template_str: str) -> str:
-                    return Template(template_str).render(style=style)
-
-                system_prompt = render_template(prompts["system_prompt"])
-                user_prompt = render_template(prompts["user_prompt"])
-
-                return {
-                    "system_message": {"role": "system", "content": system_prompt},
-                    "user_message": {"role": "user", "content": user_prompt},
-                }
-        except (FileNotFoundError, KeyError, yaml.YAMLError) as e:
-            logger.error(f"加载语言特定提示词配置失败: {e}")
-            # 如果加载失败，回退到通用提示词
-            return self._load_fallback_prompts(style)
-
-    def _load_fallback_prompts(self, style="professional") -> Dict[str, Any]:
-        """加载通用提示词作为回退"""
-        prompt_templates_file = "config/prompt_templates.yml"
-        try:
-            with open(prompt_templates_file, "r", encoding="utf-8") as file:
-                prompts = yaml.safe_load(file).get("code_review_prompt", {})
-
-                def render_template(template_str: str) -> str:
-                    return Template(template_str).render(style=style)
-
-                system_prompt = render_template(prompts["system_prompt"])
-                user_prompt = render_template(prompts["user_prompt"])
-
-                return {
-                    "system_message": {"role": "system", "content": system_prompt},
-                    "user_message": {"role": "user", "content": user_prompt},
-                }
-        except (FileNotFoundError, KeyError, yaml.YAMLError) as e:
-            logger.error(f"加载通用提示词配置失败: {e}")
+                return yaml.safe_load(file) or {}
+        except (FileNotFoundError, yaml.YAMLError) as e:
+            logger.error(f"加载审查提示词配置失败: {e}")
             raise Exception(f"提示词配置加载失败: {e}")
+
+    def _load_review_prompts(self, profile_checks: str = '', project_context: str = '',
+                             review_scope: str = '', style="professional") -> Dict[str, Any]:
+        """
+        加载基础提示词，user_prompt 的四个动态槽位保留占位符，由 review_code 统一填充。
+
+        - system_prompt：审查方法、约束、评分规则、输出格式（所有语言共用）
+        - user_prompt：项目约定 / 审查范围 / 按文件类型分组的检查点 / diff / 提交信息
+        """
+        templates = self._load_templates()
+        base = templates.get("base_review_prompt", {})
+
+        def render_template(template_str: str) -> str:
+            return Template(template_str).render(style=style)
+
+        return {
+            "system_message": {"role": "system",
+                               "content": render_template(base.get("system_prompt", ""))},
+            "user_message": {"role": "user",
+                             "content": base.get("user_prompt", "")},
+            "templates": templates,
+        }
+
+    @staticmethod
+    def _build_typed_diff_section(change: dict) -> str:
+        """
+        把带明确 type 的变更渲染成标准 unified diff 的一段。
+
+        DELETE / RENAME / BINARY 三种变更如果按普通 MODIFY 渲染，模型看到的内容
+        和 git 的真实语义对不上（删除的文件会显示成新增），所以要按各自的
+        git 格式渲染。
+        """
+        old_path = change.get('old_path') or change.get('new_path') or ''
+        new_path = change.get('new_path') or change.get('old_path') or ''
+        change_type = change.get('type', 'MODIFY')
+        body = change.get('diff', '') or ''
+
+        if change_type == 'DELETE':
+            header = (f"diff --git a/{old_path} b/{old_path}\n"
+                      f"deleted file mode 100644\n"
+                      f"--- a/{old_path}\n"
+                      f"+++ /dev/null")
+        elif change_type == 'RENAME':
+            header = (f"diff --git a/{old_path} b/{new_path}\n"
+                      f"rename from {old_path}\n"
+                      f"rename to {new_path}")
+        elif change_type == 'ADD':
+            header = (f"diff --git a/{new_path} b/{new_path}\n"
+                      f"new file mode 100644\n"
+                      f"--- /dev/null\n"
+                      f"+++ b/{new_path}")
+        elif change_type == 'BINARY':
+            return (f"diff --git a/{old_path} b/{new_path}\n"
+                    f"Binary files a/{old_path} and b/{new_path} differ\n"
+                    f"{body}")
+        else:
+            header = (f"diff --git a/{old_path} b/{new_path}\n"
+                      f"index 0000000..0000000 100644\n"
+                      f"--- a/{old_path}\n"
+                      f"+++ b/{new_path}")
+
+        return f"{header}\n{body}" if body else header
+
+    def build_review_scope(self, changes_data: Optional[list], sent_text: str) -> dict:
+        """
+        统计本次实际送进模型的内容，用于向模型和读者披露审查范围。
+
+        token 截断会把后面的文件整份丢掉，但模型不会主动声明自己没看到这些文件，
+        所以必须由代码把「实际审了什么」算出来。截断之后才算，数字才准。
+        """
+        sent_paths = []
+        for pattern in (r'^diff --git a/(.+?) b/', r'^\+\+\+ b/(.+)$'):
+            for match in re.finditer(pattern, sent_text, re.MULTILINE):
+                path = match.group(1).strip()
+                if path and path != '/dev/null' and path not in sent_paths:
+                    sent_paths.append(path)
+
+        all_changes = [c for c in (changes_data or []) if isinstance(c, dict)]
+        type_counts = {}
+        for change in all_changes:
+            change_type = change.get('type', 'MODIFY')
+            type_counts[change_type] = type_counts.get(change_type, 0) + 1
+        included = []
+        excluded = []
+        for change in all_changes:
+            path = change.get('new_path') or change.get('old_path') or ''
+            entry = {
+                'path': path,
+                'type': change.get('type', 'MODIFY'),
+                'additions': change.get('additions', 0),
+                'deletions': change.get('deletions', 0),
+            }
+            if path in sent_paths:
+                included.append(entry)
+            else:
+                excluded.append(entry)
+
+        return {
+            'total_files': len(all_changes),
+            'type_counts': type_counts,
+            'included_files': included,
+            'excluded_files': excluded,
+            'additions': sum(c.get('additions', 0) for c in all_changes),
+            'deletions': sum(c.get('deletions', 0) for c in all_changes),
+            'sent_additions': len(re.findall(r'^\+(?!\+\+)', sent_text, re.MULTILINE)),
+            'sent_deletions': len(re.findall(r'^-(?!-)', sent_text, re.MULTILINE)),
+        }
+
+    @staticmethod
+    def _format_scope_prompt_block(scope: dict) -> str:
+        """Review scope for the model: which files it actually received."""
+        if not scope or not scope.get('total_files'):
+            return ''
+        labels = {'ADD': 'added', 'MODIFY': 'modified', 'DELETE': 'deleted',
+                  'RENAME': 'renamed', 'BINARY': 'binary'}
+        counts = scope.get('type_counts') or {}
+        breakdown = ', '.join(f'{labels.get(t, t)} {n}' for t, n in sorted(counts.items()))
+
+        lines = ['- Files changed in this pull request: '
+                 f"{scope['total_files']} ({breakdown or 'none'})"]
+        lines.append(f"- Lines changed: +{scope['additions']} / -{scope['deletions']}")
+        lines.append(f"- Files actually reviewed: {len(scope['included_files'])} "
+                     f"(+{scope['sent_additions']} / -{scope['sent_deletions']} lines)")
+        if scope['excluded_files']:
+            lines.append(f"- Files NOT reviewed because of the token budget: "
+                         f"{len(scope['excluded_files'])}")
+            for entry in scope['excluded_files']:
+                lines.append(f"    - {entry['path']} "
+                             f"({labels.get(entry['type'], entry['type'])}, "
+                             f"+{entry['additions']}/-{entry['deletions']})")
+            lines.append('')
+            lines.append('Draw conclusions only about the files that were actually '
+                         'reviewed. Do not speculate about the files that were not, '
+                         'and do not count issues in them as part of this review.')
+        else:
+            lines.append('- Every changed file was reviewed.')
+        return '\n'.join(lines)
+
+    @staticmethod
+    def _format_scope_comment_header(scope: dict) -> str:
+        """评论里的文件 scope 说明，紧跟在提醒行之后、模型报告之前。
+
+        让读者一眼看出这次到底审了什么、哪些没审到。
+        """
+        if not scope or not scope.get('total_files'):
+            return ''
+        labels = {'ADD': 'added', 'MODIFY': 'modified', 'DELETE': 'deleted',
+                  'RENAME': 'renamed', 'BINARY': 'binary'}
+        lines = [f"- Files Changed: {scope['total_files']}",
+                 f"- Additions: +{scope['additions']}",
+                 f"- Deletions: -{scope['deletions']}"]
+        reviewed = len(scope['included_files'])
+        if scope['excluded_files']:
+            lines.append(f"- Reviewed: {reviewed} of {scope['total_files']} files (budget-limited)")
+            lines.append("- Skipped: "
+                         + ', '.join(entry['path'] for entry in scope['excluded_files']))
+        else:
+            lines.append(f"- Reviewed: {reviewed} of {scope['total_files']} files")
+        notable = [entry for entry in scope['included_files']
+                   if entry['type'] in ('DELETE', 'RENAME', 'BINARY')]
+        if notable:
+            lines.append('- Notable Changes: ' + ', '.join(
+                f"{entry['path']} ({labels.get(entry['type'], entry['type'])})"
+                for entry in notable))
+        return '\n'.join(lines)
+
+    def format_review_comment(self, review_result: str) -> str:
+        """组装评论正文：提醒行 + 文件 scope + 模型报告。"""
+        scope_block = self._format_scope_comment_header(self.last_review_scope)
+        return build_review_comment(review_result, scope_block)
 
     def _convert_changes_to_diff_format(self, changes: list) -> str:
         """将changes列表转换为标准的diff格式"""
@@ -254,8 +499,12 @@ class CodeReviewer(BaseReviewer):
                 # GitLab API返回的格式
                 if 'diff' in change:
                     diff_text = change['diff']
+                    change_type = change.get('type')
+                    if change_type in ('ADD', 'DELETE', 'RENAME', 'BINARY'):
+                        # 有明确变更类型的（Bitbucket），按 git 的对应格式渲染
+                        diff_text = self._build_typed_diff_section(change)
                     # 如果diff不包含文件路径信息，但有new_path，则添加标准diff头
-                    if not diff_text.startswith('diff --git') and 'new_path' in change:
+                    elif not diff_text.startswith('diff --git') and 'new_path' in change:
                         diff_text = f"diff --git a/{change['new_path']} b/{change['new_path']}\nindex 0000000..0000000 100644\n--- a/{change['new_path']}\n+++ b/{change['new_path']}\n{diff_text}"
                     diff_content.append(diff_text)
                 elif 'new_path' in change and 'old_path' in change:
@@ -275,21 +524,25 @@ class CodeReviewer(BaseReviewer):
         
         return "\n".join(diff_content)
 
-    def review_and_strip_code(self, changes_text: str, commits_text: str = "", changes_data: list = None) -> str:
+    def review_and_strip_code(self, changes_text: Union[str, list], commits_text: str = "",
+                              changes_data: Optional[list] = None,
+                              repo_context: str = '') -> str:
         """
         Review判断changes_text超出取前REVIEW_MAX_TOKENS个token，超出则截断changes_text，
         调用review_code方法，返回review_result，如果review_result是markdown格式，则去掉头尾的```
         :param changes_text: 可以是字符串或列表格式的changes
-        :param commits_text:
-        :param changes_data: 原始的changes数据，用于语言检测
+        :param commits_text: 提交信息摘要
+        :param changes_data: 原始的changes数据，用于语言检测和覆盖度统计
+        :param repo_context: 仓库级约定文本（来自仓库的指令文件），有界读取后传入
         :return:
         """
         # 保存原始的changes数据用于语言检测
         original_changes_data = changes_data
         
-        # 如果changes_text是列表格式，转换为diff格式
+        # 源码优先，生成的模型/配置靠后——预算不够时先砍靠后的
         if isinstance(changes_text, list):
-            changes_text = self._convert_changes_to_diff_format(changes_text)
+            changes_text = self._convert_changes_to_diff_format(
+                self._sort_changes_by_priority(changes_text))
         elif hasattr(changes_text, '__iter__') and not isinstance(changes_text, str):
             # 处理其他可迭代对象
             changes_text = self._convert_changes_to_diff_format(list(changes_text))
@@ -310,7 +563,7 @@ class CodeReviewer(BaseReviewer):
             logger.info(f"从changes数据中检测到的语言: {detected_language}")
         
         # 如果超长，取前REVIEW_MAX_TOKENS个token
-        review_max_tokens = int(os.getenv("REVIEW_MAX_TOKENS", 10000))
+        review_max_tokens = int(os.getenv("REVIEW_MAX_TOKENS", 100000))
         
         # 计算tokens数量，如果超过REVIEW_MAX_TOKENS，截断changes_text
         tokens_count = count_tokens(changes_text)
@@ -329,16 +582,51 @@ class CodeReviewer(BaseReviewer):
         else:
             final_language = detected_language
 
-        review_result = self.review_code(changes_text, commits_text, final_language, original_changes_data).strip()
+        # 截断之后才算覆盖度：只有这时候才知道真正送进模型的是哪些文件
+        scope = self.build_review_scope(original_changes_data, changes_text)
+        self.last_review_scope = scope
+        logger.info(f"审查覆盖度: {len(scope['included_files'])}/{scope['total_files']} "
+                    f"个文件送入模型, 未纳入 {len(scope['excluded_files'])} 个")
+
+        # 逐文件判定语言，按文件类型分组生成检查点——混合语言的提交不会串味
+        file_languages = self._detect_file_languages(changes_text)
+        if not file_languages and original_changes_data:
+            ext_map = self._file_extension_languages()
+            for change in original_changes_data:
+                if not isinstance(change, dict):
+                    continue
+                path = change.get('new_path') or change.get('old_path') or ''
+                lang = ext_map.get(os.path.splitext(path)[1].lower())
+                if lang:
+                    file_languages.append((path, lang))
+        templates = self._load_templates()
+        profile_checks = self._build_profile_checks(file_languages, templates)
+        logger.info(f"审查方向领域: "
+                    f"{self._domains_for([lang for _p, lang in file_languages])}")
+
+        scope_block = self._format_scope_prompt_block(scope)
+        project_context = repo_context or '(no project-specific context was provided)'
+
+        review_result = self.review_code(
+            changes_text, commits_text, final_language, original_changes_data,
+            profile_checks=profile_checks,
+            project_context=project_context,
+            review_scope=scope_block).strip()
         if review_result.startswith("```markdown") and review_result.endswith("```"):
             return review_result[11:-3].strip()
         return review_result
 
-    def review_code(self, diffs_text: str, commits_text: str = "", pre_detected_language: str = None, changes_data: list = None) -> str:
+    def review_code(self, diffs_text: str, commits_text: str = "",
+                    pre_detected_language: Optional[str] = None,
+                    changes_data: Optional[list] = None,
+                    profile_checks: str = '', project_context: str = '',
+                    review_scope: str = '') -> str:
         """Review 代码并返回结果"""
         # 智能选择提示词
-        if pre_detected_language and pre_detected_language != 'default':
-            # 使用预先检测到的语言
+        if pre_detected_language:
+            # 使用预先检测到的语言（包括 'default'，即通用提示词）。
+            # 不能在这里重新检测：传进来的 diffs_text 已经拼上了覆盖度说明和仓库约定，
+            # 那些文本里可能出现 +++ 之类的行，重新检测会把语言认错。
             detected_lang = pre_detected_language
             logger.info(f"使用预先检测到的语言: {detected_lang}")
         else:
@@ -352,25 +640,16 @@ class CodeReviewer(BaseReviewer):
                 detected_lang = self._detect_language_from_changes(changes_data)
                 logger.info(f"从changes数据中检测到的语言: {detected_lang}")
         
-        prompt_key = self.language_prompts.get(detected_lang, 'vue3_review_prompt')
         style = os.getenv("REVIEW_STYLE", "professional")
-        
-        logger.info(f"检测到的语言对应的提示词: {prompt_key}")
+
+        logger.info(f"检测到的语言: {detected_lang}")
         logger.info(f"当前审查风格: {style}")
-        logger.info(f"可用的语言提示词映射: {self.language_prompts}")
-        
-        # 加载对应的提示词
-        if prompt_key != "code_review_prompt":
-            logger.info(f"使用语言特定提示词: {prompt_key}")
-            try:
-                prompts = self._load_language_specific_prompts(prompt_key, style)
-                logger.info(f"成功加载语言特定提示词: {prompt_key}")
-            except Exception as e:
-                logger.error(f"加载语言特定提示词失败: {e}, 回退到通用提示词")
-                prompts = self._load_fallback_prompts(style)
-        else:
-            logger.info("使用通用提示词: code_review_prompt")
-            prompts = self._load_fallback_prompts(style)
+
+        prompts = self._load_review_prompts(profile_checks=profile_checks,
+                                            project_context=project_context,
+                                            review_scope=review_scope,
+                                            style=style)
+        logger.info("成功加载审查提示词: base + 按文件类型分组的检查点")
         
         # 记录实际使用的提示词内容（前100个字符）
         system_content = prompts["system_message"]["content"]
@@ -381,7 +660,11 @@ class CodeReviewer(BaseReviewer):
             {
                 "role": "user",
                 "content": prompts["user_message"]["content"].format(
-                    diffs_text=diffs_text, commits_text=commits_text
+                    project_context=project_context or '(none provided)',
+                    review_scope=review_scope or '(the whole change was reviewed)',
+                    profile_checks=profile_checks or '(no additional checks)',
+                    diffs_text=diffs_text,
+                    commits_text=commits_text,
                 ),
             },
         ]
@@ -389,24 +672,8 @@ class CodeReviewer(BaseReviewer):
 
     def _detect_language_from_changes(self, changes_data: list) -> str:
         """从changes数据中检测主要编程语言"""
-        file_extensions = {
-            '.py': 'python',
-            '.js': 'javascript',
-            '.ts': 'typescript',
-            '.jsx': 'javascript',
-            '.tsx': 'typescript',
-            '.vue': 'vue',
-            '.java': 'java',
-            '.go': 'go',
-            '.php': 'php',
-            '.cpp': 'cpp',
-            '.cc': 'cpp',
-            '.cxx': 'cpp',
-            '.c': 'c',
-            '.h': 'cpp',
-            '.hpp': 'cpp',
-        }
-        
+        file_extensions = self._file_extension_languages()
+
         language_counts = {}
         
         for change in changes_data:
@@ -433,6 +700,10 @@ class CodeReviewer(BaseReviewer):
         """解析 AI 返回的 Review 结果，返回评分"""
         if not review_text:
             return 0
-        match = re.search(r"总分[:：]\s*(\d+)分?", review_text)
+        # 兼容三种写法：Review Score: 88 / **Review Score**: 88 / 总分:88分
+        # 容忍 markdown 粗体与全角冒号
+        match = re.search(
+            r"(?:review\s*score|total\s*score|总分)\*{0,2}\s*[:：]\s*\**\s*(\d+)",
+            review_text, re.IGNORECASE)
         return int(match.group(1)) if match else 0
 

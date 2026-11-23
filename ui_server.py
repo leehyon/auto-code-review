@@ -81,17 +81,38 @@ def get_review_logs():
                 else "",
                 axis=1
             )
+
+        # 失败记录没有分数，不该拉低平均分——统计只算真正审完的
+        if 'status' in df.columns:
+            failed_mask = df['status'] != 'success'
+            if failed_mask.any():
+                # 必须先转成 object 列：pandas 的数值列赋 None 会变成 NaN，
+                # 而 NaN 序列化出来是 "score":NaN —— 不是合法 JSON，
+                # 浏览器 JSON.parse 直接抛错，整个 Dashboard 加载失败。
+                df['score'] = df['score'].astype(object)
+                df.loc[failed_mask, 'score'] = None
         
         # 转换为字典列表
         records = df.to_dict(orient='records')
-        
+
+        # review_result 不下发给前端：Dashboard 不用它，
+        # 完整报告已经在 PR 评论上，Summary 只留在数据库里做审计底。
+        for record in records:
+            record.pop('review_result', None)
+
         # 计算统计信息
         total = len(records)
-        average_score = df['score'].mean() if 'score' in df.columns and not df.empty else 0
-        
+        # score 列可能含 None（失败记录），要转回数值再求平均
+        numeric_scores = pd.to_numeric(df['score'], errors='coerce') if 'score' in df.columns else None
+        average_score = numeric_scores.mean() if numeric_scores is not None and not numeric_scores.empty else 0
+        failed = 0
+        if 'status' in df.columns:
+            failed = int((df['status'] != 'success').sum())
+
         return jsonify({
             'data': records,
             'total': total,
+            'failed': failed,
             'average_score': float(average_score) if not pd.isna(average_score) else 0
         })
     except Exception as e:
@@ -146,37 +167,78 @@ def get_review_stats():
         # 项目提交次数
         project_counts = df['project_name'].value_counts().reset_index()
         project_counts.columns = ['name', 'count']
-        
+
         # 项目平均分数
         project_scores = df.groupby('project_name')['score'].mean().reset_index()
         project_scores.columns = ['name', 'average_score']
-        
+
         # 人员提交次数
         author_counts = df['author'].value_counts().reset_index()
         author_counts.columns = ['name', 'count']
-        
+
+        # 只统计「PR 的所有 commit 都是提 PR 的人本人提交」的记录。
+        # PR 里混了别人的 commit 时，这份代码不是他写的 ——
+        # 这次审查的代码行数和评分都不该算在他名下
+        # （平台没给 per-commit 行数，算不出精确分摊）。
+        # 记录本身照常显示，只是不进入人员统计。
+        attributed_df = df
+        if 'author_sole_committer' in df.columns:
+            attributed_df = df[df['author_sole_committer'].fillna(1) == 1]
+
         # 人员平均分数
-        author_scores = df.groupby('author')['score'].mean().reset_index()
-        author_scores.columns = ['name', 'average_score']
-        
+        author_scores = []
+        if not attributed_df.empty:
+            author_scores_df = attributed_df.groupby('author')['score'].mean().reset_index()
+            author_scores_df.columns = ['name', 'average_score']
+            author_scores = author_scores_df.to_dict(orient='records')
+
         # 人员代码行数
         author_code_lines = []
-        if 'additions' in df.columns and 'deletions' in df.columns:
-            df['total_lines'] = df['additions'] + df['deletions']
-            author_code_lines_df = df.groupby('author')['total_lines'].sum().reset_index()
-            author_code_lines_df.columns = ['name', 'code_lines']
-            author_code_lines = author_code_lines_df.to_dict(orient='records')
+        if 'additions' in attributed_df.columns and 'deletions' in attributed_df.columns:
+            if not attributed_df.empty:
+                lines_df = attributed_df.copy()
+                lines_df['total_lines'] = lines_df['additions'] + lines_df['deletions']
+                author_code_lines_df = lines_df.groupby('author')['total_lines'].sum().reset_index()
+                author_code_lines_df.columns = ['name', 'code_lines']
+                author_code_lines = author_code_lines_df.to_dict(orient='records')
         
         return jsonify({
             'project_counts': project_counts.to_dict(orient='records'),
             'project_scores': project_scores.to_dict(orient='records'),
             'author_counts': author_counts.to_dict(orient='records'),
-            'author_scores': author_scores.to_dict(orient='records'),
+            # author_scores / author_code_lines 已经是 list（上面直接转的 records）
+            'author_scores': author_scores,
             'author_code_lines': author_code_lines
         })
     except Exception as e:
         logger.error(f"Failed to get review stats: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@ui_app.route('/api/review/retry', methods=['POST'])
+def retry_review():
+    """重跑一次失败的审查。
+
+    失败时审查没有在 PR 上留评论，只在 Dashboard 里留了一条 failed 记录，
+    这里用记录里保存的触发 payload 原样重放一次。
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        review_type = data.get('type', 'mr')
+        record_id = data.get('id')
+
+        if record_id is None:
+            return jsonify({'success': False, 'message': '缺少记录 id'}), 400
+        if review_type not in ('mr', 'push'):
+            return jsonify({'success': False, 'message': f'未知的记录类型: {review_type}'}), 400
+
+        from src.queue.worker import retry_failed_review
+        result = retry_failed_review(review_type, int(record_id))
+        status_code = 200 if result.get('success') else 400
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error(f"Failed to retry review: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @ui_app.route('/api/review/filter-options', methods=['GET'])

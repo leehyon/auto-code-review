@@ -1,181 +1,900 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Code Review Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <style>
-        /* 自定义滚动条 */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 10px;
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 10px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #555;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Code Review Dashboard</title>
+<!-- 内联 SVG 图标：不产生额外请求，内网 / 断网也能显示。
+     深色圆角方块 + 象牙白与 clay 双色的 < > ，16px 下也能认出是「代码」。 -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32' width='32' height='32'><rect width='32' height='32' rx='7' fill='%23141413'/><path d='M13 9.5 7.5 16 13 22.5' fill='none' stroke='%23FAF9F5' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/><path d='M19 9.5 24.5 16 19 22.5' fill='none' stroke='%23D97757' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<style>
+/* ============================================================
+   设计令牌
+   ============================================================ */
+:root {
+  --ivory:    #FAF9F5;   /* 页面底色：暖白纸感 */
+  --slate:    #141413;   /* 正文 */
+  --clay:     #D97757;   /* 唯一强调色 */
+  --oat:      #E3DACC;   /* 浅色块 */
+  --olive:    #788C5D;   /* 良好 */
+  --rust:     #B04A3F;   /* 风险 */
+  --gray-100: #F0EEE6;
+  --gray-300: #D1CFC5;
+  --gray-500: #87867F;
+  --gray-700: #3D3D3A;
+  --white:    #FFFFFF;
+
+  --serif: Georgia, "Times New Roman", "Songti SC", "SimSun", serif;
+  --sans:  system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono:  ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  --radius-panel: 12px;
+  --radius-row:   8px;
+  --border:   1.5px solid var(--gray-300);
+  --hairline: 1px solid var(--gray-300);
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  padding: 48px 24px 96px;
+  background: var(--ivory);
+  color: var(--slate);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.page { max-width: 1240px; margin: 0 auto; }
+
+.hidden { display: none !important; }
+
+/* ============================================================
+   页头
+   ============================================================ */
+header { margin-bottom: 36px; }
+
+.header-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+/* 标题块：主标题 + 悬挂对齐的副标题 */
+.title-block { min-width: 0; }
+
+/* 刊头：拉丁文标题用衬线。Georgia 是为屏幕渲染设计的衬线——
+   x 高度大、衬线结实，大字号下比 Times 更有分量，且不需要外部字体。
+   收紧字距让刊头更紧凑，避免大字号衬线显得松散。
+   「Review」用斜体，下面压一道陶土色的笔迹 ——
+   这面板做的就是代码评审，标题带批注线是切题的装饰，不是花纹。 */
+h1 {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 46px;
+  letter-spacing: -0.03em;
+  line-height: 1.06;
+  /* code-chip 是行内元素，盒子会探出行盒；留一点下边距，
+     免得 chip 底边贴着副标题 */
+  margin: 0 0 4px;
+}
+
+/* 「Review」用手写体 —— 但必须是系统自带的脚本字体：
+   Dashboard 零外部依赖（不引 CDN），所以只能靠字体栈。
+   脚本字体本身已经是斜的，font-style 必须回到 normal，
+   否则浏览器会再做一次假斜体合成，歪得没法看。
+
+   栈按「小而紧凑」排：
+     Segoe Script、Ink Free、Bradley Hand (Windows) —— 手写体，字面小
+     Snell Roundhand (macOS)、URW Chancery L、Z003 (Linux) —— 书法体，笔画舒展但偏大
+   各系统落到哪个字体取决于本机装了什么。 */
+h1 em {
+  font-family: "Segoe Script", "Ink Free", "Bradley Hand",
+               "Snell Roundhand", "URW Chancery L", "Z003", "Apple Chancery",
+               "Lucida Handwriting", cursive;
+  font-style: normal;
+  font-weight: 400;
+  /* 脚本字体 x 高度比 Georgia 小，0.85em 折算下来才和等宽的「<Code>」差不多大 */
+  font-size: 0.85em;
+  letter-spacing: 0;
+  position: relative;
+}
+
+/* 评审笔迹：略微倾斜的陶土色下划线。
+   位置锚在基线附近而不是 em 盒底 —— 脚本字体的下降部分很大
+   （Z003 就有 0.32em），按盒底定位会掉到基线下方十几像素，
+   离字太远。0.26em 让线贴着字母脚下，落在基线下方 2px 上下。 */
+h1 em::after {
+  content: '';
+  position: absolute;
+  left: -0.02em;
+  right: 0.04em;
+  bottom: 0.26em;
+  height: 0.05em;
+  min-height: 2px;
+  background: var(--clay);
+  border-radius: 2px;
+  opacity: 0.85;
+  transform: rotate(-2deg);
+}
+
+/* 「Code」用等宽字体 + 尖括号，不加任何底色或边框。
+   试过 markdown 代码块的浅灰底 —— 灰底一加，标题就成了贴了个控件在字上，
+   跟旁边的手写体不是一个语汇。现在全靠字体本身区分：
+   等宽 = 机器，尖括号 = 代码标记，手写 + 笔迹 = 人的批注。 */
+h1 .code-chip {
+  font-family: var(--mono);
+  /* 等宽字的 cap height 比脚本字体高，字号要压到和「Review」视觉等高 */
+  font-size: 0.8em;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--slate);
+}
+
+h1 .code-chip::before,
+h1 .code-chip::after {
+  color: var(--gray-500);
+  font-weight: 400;
+}
+
+/* 尖括号和文字之间留一点缝 */
+h1 .code-chip::before { content: '<'; margin-right: 0.08em; }
+h1 .code-chip::after { content: '>'; margin-left: 0.08em; }
+
+.subtitle {
+  color: var(--gray-500);
+  font-size: 13.5px;
+  margin: 7px 0 0;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--gray-500);
+  background: var(--gray-100);
+  border: var(--border);
+  border-radius: 999px;
+  padding: 5px 13px;
+  white-space: nowrap;
+}
+
+.pill-key { font-family: var(--sans); }
+#lastUpdate { font-family: var(--mono); }
+
+/* header 右侧：语言切换 + 最后更新时间 */
+.header-tools {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+/* 语言切换：小药丸 segmented 控件 */
+.lang-switch {
+  display: inline-flex;
+  border: 1.5px solid var(--gray-300);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--white);
+}
+.lang-btn {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  color: var(--gray-500);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.lang-btn:hover { color: var(--slate); }
+.lang-btn.active { background: var(--slate); color: var(--white); }
+
+/* ============================================================
+   区块
+   ============================================================ */
+section { margin-bottom: 40px; }
+
+h2 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 21px;
+  letter-spacing: -0.01em;
+  margin: 0 0 14px;
+}
+
+hr.rule {
+  border: none;
+  border-top: var(--hairline);
+  margin: 0 0 20px;
+}
+
+/* ============================================================
+   筛选器
+   ============================================================ */
+.filters {
+  background: var(--white);
+  border: var(--border);
+  border-radius: var(--radius-panel);
+  padding: 22px 24px 20px;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+.field-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--gray-500);
+  margin-bottom: 6px;
+}
+
+input[type="date"], select {
+  width: 100%;
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1.5px solid var(--gray-300);
+  border-radius: var(--radius-row);
+  background: var(--white);
+  color: var(--slate);
+}
+
+input[type="date"]:focus, select:focus, .btn:focus-visible {
+  outline: 2px solid var(--clay);
+  outline-offset: 1px;
+  border-color: var(--clay);
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: var(--hairline);
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1.5px solid var(--gray-300);
+  border-radius: var(--radius-row);
+  overflow: hidden;
+  background: var(--white);
+}
+
+.segmented label {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--gray-700);
+  cursor: pointer;
+  border-right: 1.5px solid var(--gray-300);
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.segmented label:last-child { border-right: none; }
+.segmented label:hover { background: var(--gray-100); }
+.segmented label:has(input:checked) { background: var(--slate); color: var(--white); }
+.segmented input { position: absolute; opacity: 0; pointer-events: none; }
+.segmented label:has(input:focus-visible) { outline: 2px solid var(--clay); outline-offset: -2px; }
+
+.buttons { display: flex; gap: 10px; }
+
+.btn {
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 8px 20px;
+  border-radius: var(--radius-row);
+  border: 1.5px solid var(--gray-300);
+  background: var(--white);
+  color: var(--slate);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.btn:hover { border-color: var(--gray-500); }
+.btn.primary { background: var(--slate); border-color: var(--slate); color: var(--white); }
+.btn.primary:hover { background: var(--gray-700); border-color: var(--gray-700); }
+
+.notice {
+  background: var(--oat);
+  border-radius: var(--radius-row);
+  padding: 11px 14px;
+  font-size: 13px;
+  color: var(--slate);
+  margin-top: 16px;
+}
+
+/* ============================================================
+   统计条
+   ============================================================ */
+.stat-band {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.stat-card {
+  background: var(--white);
+  border: var(--border);
+  border-radius: var(--radius-panel);
+  padding: 20px 22px 18px;
+}
+
+/* 强调边只用于「需要注意」的状态，不是装饰 */
+.stat-card.accent { border-left: 4px solid var(--clay); padding-left: 19px; }
+
+/* 可点击的统计卡：审查失败 —— 点它筛出失败行（重试入口就在那些行上） */
+.stat-card.clickable { cursor: pointer; transition: border-color .15s, background .15s; }
+.stat-card.clickable:hover { border-color: var(--clay); }
+.stat-card.clickable.active {
+  border-color: var(--clay);
+  border-left: 4px solid var(--clay);
+  padding-left: 19px;
+  background: #FDF6F2;
+}
+.stat-card.clickable.active .stat-num { color: var(--clay); }
+
+.stat-num {
+  display: block;
+  font-family: var(--serif);
+  font-size: 40px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--slate);
+  margin-bottom: 8px;
+}
+
+.stat-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--gray-500);
+}
+
+/* ============================================================
+   标签页
+   ============================================================ */
+.tabs {
+  display: flex;
+  gap: 26px;
+  border-bottom: var(--hairline);
+  margin-bottom: 22px;
+}
+
+.tab-button {
+  font-family: var(--serif);
+  font-size: 18px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 0 0 10px;
+  color: var(--gray-500);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.tab-button:hover { color: var(--slate); }
+.tab-button.active { color: var(--slate); border-bottom-color: var(--clay); }
+
+/* ============================================================
+   表格
+   ============================================================ */
+.table-wrap {
+  background: var(--white);
+  border: var(--border);
+  border-radius: var(--radius-panel);
+  overflow: hidden;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 940px;
+}
+
+thead th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--gray-500);
+  background: var(--gray-100);
+  padding: 11px 16px;
+  border-bottom: var(--hairline);
+  white-space: nowrap;
+}
+
+tbody td {
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--gray-100);
+  font-size: 13px;
+  vertical-align: middle;
+}
+
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--ivory); }
+
+td.mono { font-family: var(--mono); font-size: 12px; }
+td.muted { color: var(--gray-500); font-size: 12px; }
+td.author { color: var(--gray-700); }
+td.commit { color: var(--slate); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 项目名列：项目名有 30+ 字符的（sw-7165-gsa-vw-csp31-elmos523.63），
+   不限宽会把表格撑到超出容器，右侧冒出横向滚动条。
+   宽度上限和分支列一致，超出部分用省略号（完整名字在 title 里）。 */
+td.project-cell {
+  max-width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* PR 链接列：编号用 mono，像报刊的交叉引用 */
+.pr-link {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--clay);
+  text-decoration: none;
+  border-bottom: 1px dotted transparent;
+  white-space: nowrap;
+}
+.pr-link:hover { border-bottom-color: var(--clay); }
+
+/* 这些列不折行：折行会让一眼扫读变成逐行确认 */
+td.nowrap { white-space: nowrap; }
+td.branch { max-width: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.score { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 13px; }
+
+/* 状态标记 */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--gray-500);
+  white-space: nowrap;
+}
+.status.failed { color: var(--rust); }
+.status.failed .dot { background: var(--rust); }
+
+/* 行内操作按钮：查看 PR、重试 */
+.row-action, .retry-btn {
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 4px 11px;
+  border: 1.5px solid var(--gray-300);
+  border-radius: 999px;
+  background: var(--white);
+  color: var(--slate);
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-block;
+  text-decoration: none;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.row-action:hover, .retry-btn:hover { border-color: var(--clay); color: var(--clay); }
+.retry-btn:disabled { opacity: 0.5; cursor: default; }
+.row-action:hover:disabled, .retry-btn:hover:disabled { border-color: var(--gray-300); color: var(--slate); }
+/* 两个按钮并排时的间距 */
+.action-cell .row-action + .row-action,
+.action-cell .row-action + .retry-btn,
+.action-cell .retry-btn + .row-action { margin-left: 6px; }
+
+/* 操作列：行末放查看/重试按钮，宽度固定，避免列宽随内容跳动 */
+.action-col { width: 88px; }
+/* 表格有横向滚动条，操作列右固定，重试入口始终可见。
+   固定列必须是不透明背景，否则滚动时内容会从下面透出来。
+   背景色要跟同列其它单元格一致：表头是灰底（--gray-100），
+   表体是白底（--white，.table-wrap 的底色）。 */
+th.action-col, td.action-cell {
+  position: sticky;
+  right: 0;
+}
+th.action-col { z-index: 2; background: var(--gray-100); text-align: center; }
+/* 操作列表头居中，按钮也跟着居中 —— 否则这一列表头和按钮会错开。 */
+td.action-cell { text-align: center; background: var(--white); }
+tbody tr:hover td.action-cell { background: var(--ivory); }
+/* 固定列的左侧分隔线，提示这里是浮在上面的 */
+td.action-cell::before, th.action-col::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: -1px;
+  width: 1px;
+  background: var(--gray-100);
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.dot.good { background: var(--olive); }
+.dot.mid  { background: var(--clay); }
+.dot.bad  { background: var(--rust); }
+
+.link {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--clay);
+  text-decoration: none;
+  border-bottom: 1px dotted transparent;
+  white-space: nowrap;
+}
+.link:hover { border-bottom-color: var(--clay); }
+
+.empty {
+  padding: 44px 16px;
+  text-align: center;
+  color: var(--gray-500);
+  font-size: 13px;
+}
+
+/* ============================================================
+   图表
+   ============================================================ */
+.chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+.chart-panel {
+  background: var(--white);
+  border: var(--border);
+  border-radius: var(--radius-panel);
+  padding: 22px 24px 20px;
+}
+
+.chart-panel.wide { grid-column: 1 / -1; }
+
+.chart-title {
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 500;
+  margin: 0 0 4px;
+}
+
+.chart-caption {
+  font-size: 12px;
+  color: var(--gray-500);
+  margin: 0 0 16px;
+}
+
+/* 横条图的行是网格：标签 | 横条 | 数值。
+   标签列宽度由 --bar-label-w 给出，5 张图共用同一个值（app.js 渲染后测量填入）——
+   每张图各算各的（auto）的话，项目图标签占 150px、人员图只占 58px，
+   横条起点就错开了，跨图比较长度时对不齐。
+
+   .bars 自己当网格容器、.bar-row 用 display:contents 把单元格交给它排 ——
+   这样同一张图里所有行共用同一条列轨道，行与行之间才对得齐。 */
+.bars {
+  display: grid;
+  grid-template-columns: var(--bar-label-w, auto) 1fr 54px;
+  column-gap: 14px;
+  row-gap: 11px;
+  align-items: center;
+}
+
+.bar-row { display: contents; }
+
+/* 没有数据时的提示要占满整行 */
+.bars .no-data { grid-column: 1 / -1; }
+
+.bar-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--gray-700);
+  /* 项目名有 30+ 字符的（sw-7165-gsa-vw-csp31-elmos523.63），
+     标签列不能跟着涨 —— 涨了横条就被挤短，同一张图里长名字和短名字
+     的横条没法比长度。上限 150px，超出部分截断（完整名字在 title 里）。 */
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bar-track {
+  height: 8px;
+  background: var(--gray-100);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--clay);
+  transition: width 200ms ease;
+}
+
+.bar-fill.good { background: var(--olive); }
+.bar-fill.mid  { background: var(--clay); }
+.bar-fill.bad  { background: var(--rust); }
+
+/* 人员代码变更总行数：每个人一个固定颜色。
+   按名字哈希取色，同一个人在任何筛选条件下都是同一个颜色；
+   撞色了就往后挪一格，避免两个人同色。 */
+.bar-fill.c0 { background: #D97757; }  /* 陶土 */
+.bar-fill.c1 { background: #4A7C8C; }  /* 青蓝 */
+.bar-fill.c2 { background: #788C5D; }  /* 橄榄 */
+.bar-fill.c3 { background: #8A6A8F; }  /* 梅紫 */
+.bar-fill.c4 { background: #B08D57; }  /* 赭石 */
+.bar-fill.c5 { background: #B04A3F; }  /* 砖红 */
+.bar-fill.c6 { background: #5F7FA6; }  /* 雾蓝 */
+.bar-fill.c7 { background: #6E7B5A; }  /* 卡其 */
+
+.bar-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--gray-700);
+  text-align: right;
+}
+
+.no-data { font-size: 13px; color: var(--gray-500); padding: 12px 0; }
+
+/* ============================================================
+   页脚
+   ============================================================ */
+.page-footer {
+  margin-top: 44px;
+  padding-top: 18px;
+  border-top: var(--hairline);
+}
+
+/* 页脚：logo 在左并跨两行，署名和描述在中间，版权在右下角。
+   用 grid 而不是 flex，是为了让描述行的左边缘跟「SW Team」对齐，
+   并让版权跟描述共用一条基线——版权是「最后一行」的元素，
+   放在顶部会跟 SW TEAM 看成平级，而它们并不是平级关系。
+   align-items:baseline 让同一行里的文字按基线对齐，而不是按顶边。 */
+.page-footer {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "logo team ."
+    "logo desc copy";
+  align-items: baseline;
+  column-gap: 20px;
+  row-gap: 4px;
+}
+
+.footer-logo {
+  grid-area: logo;
+  /* 高度取右边两行文字（44px）的 80%，视觉上呼应但略小一号，
+     不跟文字抢注意力。原始比例 300/66，width:auto 会自动等比。
+     align-self:center 让它在这个高度下仍与文字块居中对齐。 */
+  align-self: center;
+  height: 35px;
+  width: auto;
+  object-fit: contain;
+}
+
+.footer-team {
+  grid-area: team;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--slate);
+  margin: 0;
+}
+
+.footer-copy {
+  grid-area: copy;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--gray-500);
+  white-space: nowrap;
+  margin: 0;
+}
+
+.footer-desc {
+  grid-area: desc;
+  color: var(--gray-500);
+  font-size: 13px;
+  margin: 0;
+  max-width: 52ch;
+}
+
+/* ============================================================
+   响应式
+   ============================================================ */
+@media (max-width: 900px) {
+  .filter-grid { grid-template-columns: repeat(2, 1fr); }
+  .stat-band { grid-template-columns: repeat(2, 1fr); }
+  .chart-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 560px) {
+  body { padding: 28px 16px 64px; }
+  .filter-grid { grid-template-columns: 1fr; }
+  .stat-band { grid-template-columns: 1fr; }
+  h1 { font-size: 26px; }
+  .stat-num { font-size: 32px; }
+  .page-footer {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "logo"
+      "team"
+      "desc"
+      "copy";
+    row-gap: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+</style>
 </head>
-<body class="bg-gray-50 min-h-screen">
-    <!-- 头部导航 -->
-    <nav class="bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex items-center justify-between h-16">
-                <div class="flex items-center">
-                    <h1 class="text-2xl font-bold">📊 Code Review Dashboard</h1>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <span id="lastUpdate" class="text-sm text-blue-100"></span>
-                </div>
-            </div>
+<body>
+<div class="page">
+
+  <header>
+    <div class="header-top">
+      <div class="title-block">
+        <h1><span class="code-chip">Code</span> <em>Review</em></h1>
+        <p class="subtitle" data-i18n="meta.subtitle">Merge Request 与 Push 的自动审查记录</p>
+      </div>
+      <div class="header-tools">
+        <span class="pill"><span class="pill-key" data-i18n="header.lastUpdated">最后更新</span><span id="lastUpdate">—</span></span>
+        <div class="lang-switch" role="group" aria-label="Language" data-i18n-aria="lang.label">
+          <button type="button" class="lang-btn" data-lang-btn="zh" onclick="setLanguage('zh')">中文</button>
+          <button type="button" class="lang-btn" data-lang-btn="en" onclick="setLanguage('en')">EN</button>
         </div>
-    </nav>
+      </div>
+    </div>
+  </header>
 
-    <!-- 主要内容 -->
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <!-- 筛选器 -->
-        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">开始日期</label>
-                    <input type="date" id="startDate" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">结束日期</label>
-                    <input type="date" id="endDate" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">用户名</label>
-                    <select id="authors" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
-                        <option value="">全部</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">项目名</label>
-                    <select id="projectNames" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
-                        <option value="">全部</option>
-                    </select>
-                </div>
-            </div>
-            <div class="mt-4 flex items-center space-x-4">
-                <button onclick="loadData()" class="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 transition">
-                    查询
-                </button>
-                <button onclick="resetFilters()" class="px-6 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500 transition">
-                    重置
-                </button>
-                <div class="flex items-center space-x-2">
-                    <input type="radio" id="typeMr" name="reviewType" value="mr" checked class="text-blue-600 focus:ring-blue-500">
-                    <label for="typeMr" class="text-sm font-medium text-gray-700">Merge Request</label>
-                    <input type="radio" id="typePush" name="reviewType" value="push" class="ml-4 text-blue-600 focus:ring-blue-500">
-                    <label for="typePush" class="text-sm font-medium text-gray-700">Push</label>
-                </div>
-            </div>
-        </div>
-
-        <!-- 统计卡片 -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-            <div class="bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg shadow-lg p-6 text-white">
-                <h3 class="text-lg font-semibold mb-2">总记录数</h3>
-                <p class="text-4xl font-bold" id="totalRecords">0</p>
-            </div>
-            <div class="bg-gradient-to-r from-purple-500 to-purple-600 rounded-lg shadow-lg p-6 text-white">
-                <h3 class="text-lg font-semibold mb-2">平均分数</h3>
-                <p class="text-4xl font-bold" id="averageScore">0.00</p>
-            </div>
-        </div>
-
-        <!-- 标签页 -->
-        <div class="bg-white rounded-lg shadow-md mb-6">
-            <div class="border-b border-gray-200">
-                <nav class="flex -mb-px">
-                    <button onclick="switchTab('data')" id="tabData" class="tab-button active px-6 py-4 text-sm font-medium text-blue-600 border-b-2 border-blue-600">
-                        数据表格
-                    </button>
-                    <button onclick="switchTab('charts')" id="tabCharts" class="tab-button px-6 py-4 text-sm font-medium text-gray-500 hover:text-gray-700 hover:border-gray-300">
-                        统计图表
-                    </button>
-                </nav>
-            </div>
-
-            <!-- 数据表格标签页 -->
-            <div id="tabContentData" class="tab-content p-6">
-                <div class="overflow-x-auto">
-                    <table class="min-w-full divide-y divide-gray-200">
-                        <thead class="bg-gray-50">
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">项目名</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">作者</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" id="branchHeader">源分支</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" id="targetBranchHeader">目标分支</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">更新时间</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">提交信息</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">代码变更</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">分数</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" id="urlHeader">链接</th>
-                            </tr>
-                        </thead>
-                        <tbody id="dataTableBody" class="bg-white divide-y divide-gray-200">
-                            <tr>
-                                <td colspan="9" class="px-6 py-4 text-center text-gray-500">加载中...</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-
-            <!-- 图表标签页 -->
-            <div id="tabContentCharts" class="tab-content hidden p-6">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div class="bg-gray-50 rounded-lg p-4">
-                        <h3 class="text-lg font-semibold mb-4 text-center">项目提交次数</h3>
-                        <canvas id="projectCountChart"></canvas>
-                    </div>
-                    <div class="bg-gray-50 rounded-lg p-4">
-                        <h3 class="text-lg font-semibold mb-4 text-center">项目平均分数</h3>
-                        <canvas id="projectScoreChart"></canvas>
-                    </div>
-                    <div class="bg-gray-50 rounded-lg p-4">
-                        <h3 class="text-lg font-semibold mb-4 text-center">人员提交次数</h3>
-                        <canvas id="authorCountChart"></canvas>
-                    </div>
-                    <div class="bg-gray-50 rounded-lg p-4">
-                        <h3 class="text-lg font-semibold mb-4 text-center">人员平均分数</h3>
-                        <canvas id="authorScoreChart"></canvas>
-                    </div>
-                    <div class="bg-gray-50 rounded-lg p-4 md:col-span-2">
-                        <h3 class="text-lg font-semibold mb-4 text-center">人员代码变更总行数</h3>
-                        <canvas id="authorCodeLineChart"></canvas>
-                    </div>
-                </div>
-            </div>
-        </div>
+  <!-- 筛选器 -->
+  <section class="filters">
+    <div class="filter-grid">
+      <div>
+        <label class="field-label" for="startDate" data-i18n="filter.startDate">开始日期</label>
+        <input type="date" id="startDate">
+      </div>
+      <div>
+        <label class="field-label" for="endDate" data-i18n="filter.endDate">结束日期</label>
+        <input type="date" id="endDate">
+      </div>
+      <div>
+        <label class="field-label" for="authors" data-i18n="filter.author">作者</label>
+        <select id="authors"><option value="" data-i18n="filter.all">全部</option></select>
+      </div>
+      <div>
+        <label class="field-label" for="projectNames" data-i18n="filter.project">项目</label>
+        <select id="projectNames"><option value="" data-i18n="filter.all">全部</option></select>
+      </div>
     </div>
 
-    <!-- 页脚 -->
-    <footer class="bg-[#f2f3f4] text-[#3d3d3d] mt-8">
-        <div class="max-w-7xl mx-auto px-4 py-6 flex flex-col md:flex-row items-center md:justify-between">
-            <div class="flex items-center">
-                <img src="magna-logo.png" alt="Magna Logo" class="h-8 w-auto mr-3">
-                <div>
-                    <p class="text-sm font-semibold">SW Team</p>
-                    <p class="text-xs ">基于 AI 的自动代码审查与统计面板，帮助团队提升代码质量</p>
-                </div>
-            </div>
-            <div class="mt-4 md:mt-0 text-xs">© 2026 Magna Mirrors/Lighting COE</div>
-        </div>
-    </footer>
+    <div class="filter-actions">
+      <div class="segmented" role="radiogroup" aria-label="审查类型" data-i18n-aria="filter.type">
+        <label><input type="radio" id="typeMr" name="reviewType" value="mr" checked> Merge Request</label>
+        <label><input type="radio" id="typePush" name="reviewType" value="push"> Push</label>
+      </div>
+      <div class="buttons">
+        <button class="btn primary" onclick="applyFilters()" data-i18n="filter.query">查询</button>
+        <button class="btn" onclick="resetFilters()" data-i18n="filter.reset">重置</button>
+      </div>
+    </div>
 
-    <script src="app.js"></script>
+    <div id="filterNotice" class="notice hidden"></div>
+  </section>
+
+  <!-- 统计条 -->
+  <section>
+    <div class="stat-band">
+      <div class="stat-card">
+        <span class="stat-num" id="totalRecords">0</span>
+        <span class="stat-label" data-i18n="stat.records">审查记录</span>
+      </div>
+      <div class="stat-card" id="averageScoreCard">
+        <span class="stat-num" id="averageScore">0.00</span>
+        <span class="stat-label" data-i18n="stat.average">平均分数</span>
+      </div>
+      <div class="stat-card clickable" id="failedCard" onclick="toggleFailedFilter()"
+           title="点击只看失败的审查（有重试入口的行）" data-i18n-title="stat.failedHint">
+        <span class="stat-num" id="statFailed">0</span>
+        <span class="stat-label" data-i18n="stat.failed">审查失败</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-num" id="statAuthors">0</span>
+        <span class="stat-label" data-i18n="stat.authors">参与人数</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 记录 / 统计 -->
+  <section>
+    <nav class="tabs">
+      <button class="tab-button active" onclick="switchTab('data')" id="tabData" data-i18n="tab.records">记录</button>
+      <button class="tab-button" onclick="switchTab('charts')" id="tabCharts" data-i18n="tab.charts">统计</button>
+    </nav>
+
+    <div id="tabContentData" class="tab-content">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th data-i18n="col.project">项目</th>
+              <th data-i18n="col.author">作者</th>
+              <th id="branchHeader" data-i18n="col.sourceBranch">源分支</th>
+              <th data-i18n="col.updated">更新时间</th>
+              <th data-i18n="col.commits">提交信息</th>
+              <th data-i18n="col.delta">代码变更</th>
+              <th data-i18n="col.score">分数</th>
+              <th data-i18n="col.status">状态</th>
+              <th id="urlHeader" data-i18n="col.link">链接</th>
+              <th class="action-col" data-i18n="col.action">操作</th>
+            </tr>
+          </thead>
+          <tbody id="dataTableBody">
+            <tr><td colspan="10" class="empty" data-i18n="state.loading">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tabContentCharts" class="tab-content hidden">
+      <div class="chart-grid">
+        <div class="chart-panel">
+          <h3 class="chart-title" data-i18n="chart.projectCount">项目提交次数</h3>
+          <p class="chart-caption" data-i18n="chart.countCaption">当前筛选范围内的审查数量</p>
+          <div class="bars" id="projectCountChart"></div>
+        </div>
+        <div class="chart-panel">
+          <h3 class="chart-title" data-i18n="chart.projectScore">项目平均分数</h3>
+          <p class="chart-caption" data-i18n="chart.scoreCaption">满分 100，越高表示问题越少</p>
+          <div class="bars" id="projectScoreChart"></div>
+        </div>
+        <div class="chart-panel">
+          <h3 class="chart-title" data-i18n="chart.authorCount">人员提交次数</h3>
+          <p class="chart-caption" data-i18n="chart.countCaption">当前筛选范围内的审查数量</p>
+          <div class="bars" id="authorCountChart"></div>
+        </div>
+        <div class="chart-panel">
+          <h3 class="chart-title" data-i18n="chart.authorScore">人员平均分数</h3>
+          <p class="chart-caption" data-i18n="chart.scoreCaption">满分 100，越高表示问题越少</p>
+          <div class="bars" id="authorScoreChart"></div>
+        </div>
+        <div class="chart-panel wide">
+          <h3 class="chart-title" data-i18n="chart.authorLines">人员代码变更总行数</h3>
+          <p class="chart-caption" data-i18n="chart.linesCaption">新增与删除行数合计</p>
+          <div class="bars" id="authorCodeLineChart"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <footer class="page-footer">
+    <img class="footer-logo" src="img/magna-logo.png" alt="Magna" width="300" height="66">
+    <p class="footer-team">SW Team</p>
+    <p class="footer-copy">© 2026 Magna Mirrors COE</p>
+    <p class="footer-desc" data-i18n="footer.desc">基于 AI 的自动代码审查与统计面板</p>
+  </footer>
+
+</div>
+<script src="i18n.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
-

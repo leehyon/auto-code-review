@@ -8,6 +8,13 @@ import pymysql
 
 
 class DatabaseConnection(ABC):
+    """SQL 占位符风格。SQLite 只认 ?，MySQL 认 %s。
+
+    查询里的占位符必须跟后端一致，写死了就会出现
+    "near %: syntax error"，而这个异常常常被 except 吞掉，
+    结果是「筛选后查不到数据」而不是报错。
+    """
+    placeholder = '?'
     """数据库连接抽象基类"""
 
     @abstractmethod
@@ -130,6 +137,7 @@ class SQLiteConnection(DatabaseConnection):
 
 
 class MySQLConnection(DatabaseConnection):
+    placeholder = '%s'
     """MySQL数据库连接实现"""
 
     def __init__(self, host: str, port: int, user: str, password: str, database: str):

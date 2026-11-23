@@ -3,13 +3,18 @@ venv/
 test/
 .idea/
 
-log/*
-!log/.gitkeep
+logs/*
+!logs/.gitkeep
 data/*
 !data/.gitkeep
 
-conf/.env
+config/.env
+# .env.dist 是配置模板，需要纳入版本管理
+!config/.env.dist
 .pyc
 __pycache__/
 .cursorignore
 test_*.py
+
+# 本地 IDE 配置（含浏览器缓存数据库，别提交）
+.vscode/

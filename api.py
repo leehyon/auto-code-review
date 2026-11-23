@@ -5,6 +5,7 @@ load_dotenv("config/.env")
 import atexit
 import json
 import os
+import threading
 import traceback
 from datetime import datetime
 from urllib.parse import urlparse
@@ -16,16 +17,18 @@ from flask import Flask, request, jsonify, send_from_directory
 import os
 
 from src.gitlab.webhook_handler import slugify_url
+from src.bitbucket.webhook_handler import verify_webhook_signature
 from src.queue.worker import handle_merge_request_event, handle_push_event, handle_github_pull_request_event, \
     handle_github_push_event, handle_gitea_push_event, handle_gitea_pull_request_event, \
-    handle_bitbucket_push_event, handle_bitbucket_pull_request_event
+    handle_bitbucket_push_event, handle_bitbucket_pull_request_event, \
+    handle_bitbucket_pull_request_deleted_event
 from src.service.review_service import ReviewService
 from src.utils.messaging import notifier
 from src.utils.log import logger
 from src.utils.queue import handle_queue
 from src.utils.reporter import Reporter
 
-from src.utils.config_checker import check_config
+from src.utils.config_checker import check_config, check_llm_connectivity
 
 api_app = Flask(__name__, static_folder='web', static_url_path='')
 
@@ -270,6 +273,10 @@ def handle_webhook():
     logger.debug(f'Request headers: {dict(request.headers)}')
     logger.debug(f'Content-Type: {request.content_type}')
     
+    # 保存原始请求体：Bitbucket webhook 签名是对原始字节做的 HMAC，
+    # 解析成 JSON 再序列化回去会得到不同的字节，签名就校验不上了
+    raw_body = request.get_data()
+
     # 获取请求的JSON数据
     # 尝试多种方式获取 JSON 数据
     data = None
@@ -294,18 +301,38 @@ def handle_webhook():
     # 所以需要优先检查 X-Gitea-Event（如果存在，一定是 Gitea）
     github_event = request.headers.get('X-GitHub-Event')
     gitea_event = request.headers.get('X-Gitea-Event')
-    # Bitbucket Server / Data Center 使用 `X-Event-Key` header
+    # Bitbucket Server/Data Center 通过 X-Event-Key 传递事件类型（GitHub/Gitea 不会发送该 header）
     bitbucket_event = request.headers.get('X-Event-Key')
-    
-    logger.debug(f'GitHub event: {github_event}, Gitea event: {gitea_event}')
+    # 某些链路（反向代理、企业网关、中间件）会丢掉自定义 header。
+    # Bitbucket 的 payload 里带 eventKey 字段，可以据此兜底识别，
+    # 否则请求会落进 GitLab 分支，报一个和真实原因无关的 "Missing GitLab URL"
+    if not bitbucket_event:
+        bitbucket_event = data.get('eventKey') or ''
+
+    logger.info(f'Webhook 事件识别: GitHub={github_event or "-"}, '
+                f'Gitea={gitea_event or "-"}, Bitbucket={bitbucket_event or "-"}, '
+                f'payload.eventKey={data.get("eventKey") or "-"}')
 
     # 优先识别 Gitea（因为 Gitea 会同时发送两种 header，但 GitHub 不会发送 Gitea header）
     if gitea_event:  # Gitea webhook（优先）
         return handle_gitea_webhook(gitea_event, data)
     elif github_event:  # GitHub webhook
         return handle_github_webhook(github_event, data)
-    elif bitbucket_event:
-        return handle_bitbucket_webhook(bitbucket_event, data)
+    elif bitbucket_event and is_bitbucket_event(bitbucket_event):  # Bitbucket Server/Data Center webhook
+        return handle_bitbucket_webhook(bitbucket_event, data, raw_body)
+    elif not any((github_event, gitea_event, bitbucket_event)):
+        # 一个平台的事件头都没有：说明请求不是来自任何已支持的平台，
+        # 或者链路把 header 丢了。明确报错，不要让请求掉进 GitLab 分支
+        logger.error('Webhook 请求没有携带任何平台事件头，无法识别来源: '
+                     f'X-GitHub-Event={github_event or "-"}, '
+                     f'X-Gitea-Event={gitea_event or "-"}, '
+                     f'X-Event-Key={request.headers.get("X-Event-Key") or "-"}, '
+                     f'payload.eventKey={data.get("eventKey") or "-"}')
+        return jsonify({
+            'message': 'Unrecognized webhook: no platform event header '
+                       '(X-Event-Key / X-GitHub-Event / X-Gitea-Event) and no '
+                       'eventKey in the payload.'
+        }), 400
     else:  # GitLab webhook（默认）
         return handle_gitlab_webhook(data)
 
@@ -391,70 +418,6 @@ def handle_gitlab_webhook(data):
         return jsonify(error_message), 400
 
 
-def handle_bitbucket_webhook(event_key: str, data: dict):
-    """
-    处理 Bitbucket Server / Data Center 的 webhook，基于 `X-Event-Key`。
-    常见 event_key: repo:refs_changed (push), pr:opened, pr:from_ref_updated 等
-    """
-    logger.info(f'Processing Bitbucket event: {event_key}')
-
-    # 获取 Bitbucket URL
-    bitbucket_url = os.getenv('BITBUCKET_URL') or request.headers.get('X-Bitbucket-Instance')
-    if not bitbucket_url:
-        # 从 payload 中提取 repository 链接
-        repository = data.get('repository', {})
-        links = repository.get('links', {})
-        self_links = links.get('self', []) if isinstance(links, dict) else []
-        html_url = ''
-        if self_links and isinstance(self_links, list):
-            html_url = self_links[0].get('href', '')
-        # 备用字段
-        if not html_url:
-            html_url = repository.get('links', {}).get('clone', [{}])[0].get('href', '') if repository.get('links') else ''
-
-        if not html_url:
-            return jsonify({'message': 'Missing Bitbucket URL'}), 400
-        try:
-            parsed_url = urlparse(html_url)
-            bitbucket_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        except Exception as e:
-            return jsonify({"error": f"Failed to parse repository URL: {str(e)}"}), 400
-
-    # 获取 Token
-    bitbucket_token = os.getenv('BITBUCKET_ACCESS_TOKEN') or request.headers.get('X-Bitbucket-Token')
-    if not bitbucket_token:
-        return jsonify({'message': 'Missing Bitbucket access token'}), 400
-
-    bitbucket_url_slug = slugify_url(bitbucket_url)
-
-    # 处理 push / refs_changed
-    if event_key and event_key.startswith('repo:') and ('refs_changed' in event_key or 'push' in event_key):
-        handle_queue(handle_bitbucket_push_event, data, bitbucket_token, bitbucket_url, bitbucket_url_slug)
-        return jsonify({'message': f'Request received(event_key={event_key}), will process asynchronously.'}), 200
-
-    # 处理 PR 相关事件，Bitbucket 的 event_key 通常以 pr: 开头
-    if event_key and event_key.startswith('pr:'):
-        # Map Bitbucket PR event keys to action
-        action_map = {
-            'pr:opened': 'opened',
-            'pr:from_ref_updated': 'synchronize',
-            'pr:edited': 'update',
-            'pr:declined': 'closed',
-            'pr:merged': 'merged'
-        }
-        action = action_map.get(event_key, '')
-        # 将 action 放入 payload 中以便 handler 使用（兼容现有逻辑）
-        if isinstance(data, dict):
-            data.setdefault('action', action)
-
-        handle_queue(handle_bitbucket_pull_request_event, data, bitbucket_token, bitbucket_url, bitbucket_url_slug)
-        return jsonify({'message': f'Request received(event_key={event_key}), will process asynchronously.'}), 200
-
-    error_message = f'Only pull request and push events are supported for Bitbucket webhook, but received: {event_key}.'
-    logger.error(error_message)
-    return jsonify(error_message), 400
-
-
 def handle_gitea_webhook(event_type, data):
     logger.info(f'Processing Gitea webhook, event_type: {event_type}')
     
@@ -525,11 +488,183 @@ def handle_gitea_webhook(event_type, data):
         return jsonify(error_message), 400
 
 
-if __name__ == '__main__':
-    check_config()
+# Bitbucket Server/Data Center 的事件类型（通过 X-Event-Key header 传递）
+# 注意：Bitbucket Cloud 使用的是 pullrequest: / repo:push，与下面的取值不同，不会被误判
+BITBUCKET_PR_EVENT_PREFIX = 'pr:'
+BITBUCKET_PING_EVENT = 'diagnostics:ping'
+# PR 被删除的事件。PR 没了，Dashboard 上对应的审查记录也没意义，
+# 收到这个事件就把记录删掉。
+BITBUCKET_PR_DELETED_EVENT = 'pr:deleted'
+BITBUCKET_REPO_EVENTS = (
+    'repo:refs_changed',  # push
+    'repo:modified',
+    'repo:forked',
+    'repo:comment:added',
+    'repo:comment:edited',
+    'repo:comment:deleted',
+)
+
+
+def is_bitbucket_event(event_key: str) -> bool:
+    """判断 X-Event-Key 是否为 Bitbucket Server/Data Center 的事件。"""
+    if not event_key:
+        return False
+    return (event_key.startswith(BITBUCKET_PR_EVENT_PREFIX)
+            or event_key in BITBUCKET_REPO_EVENTS
+            or event_key == BITBUCKET_PING_EVENT)
+
+
+def extract_bitbucket_url(data: dict) -> str:
+    """
+    从 webhook payload 中推导 Bitbucket 实例地址。
+
+    普通项目的链接形如 ``http://host:7990/bitbucket/projects/KEY/repos/slug/browse``，
+    个人项目（personal project）的链接形如 ``http://host:7990/users/username/repos/slug/browse``，
+    截断对应前缀之后的部分即可得到实例地址（保留 context path）。
+    """
+    candidates = []
+
+    repository = data.get('repository') or {}
+    links = repository.get('links') or {}
+    self_links = links.get('self') or []
+    if self_links and isinstance(self_links[0], dict):
+        candidates.append(self_links[0].get('href', ''))
+
+    pull_request = data.get('pullRequest') or {}
+    to_ref = pull_request.get('toRef') or {}
+    to_repository = to_ref.get('repository') or {}
+    to_links = to_repository.get('links') or {}
+    to_self_links = to_links.get('self') or []
+    if to_self_links and isinstance(to_self_links[0], dict):
+        candidates.append(to_self_links[0].get('href', ''))
+
+    # 个人项目的仓库链接挂在 /users/<username>/ 下，普通项目挂在 /projects/<key>/ 下
+    for marker in ('/projects/', '/users/'):
+        for href in candidates:
+            if not href:
+                continue
+            index = href.find(marker)
+            if index > 0:
+                return href[:index].rstrip('/')
+    return ''
+
+
+def get_bitbucket_credentials():
+    """
+    获取 Bitbucket 访问凭证。
+
+    只使用 Bearer 认证：环境变量 BITBUCKET_ACCESS_TOKEN 即为 Personal Access Token，
+    请求时以 ``Authorization: Bearer <token>`` 发送，不需要用户名。
+    """
+    return os.getenv('BITBUCKET_ACCESS_TOKEN')
+
+
+def handle_bitbucket_webhook(event_type, data, raw_body: bytes = b''):
+    logger.info(f'Processing Bitbucket webhook, event_type: {event_type}')
+    # X-Request-Id 是 Bitbucket 生成的请求 ID，日志里带上方便对排查
+    request_id = request.headers.get('X-Request-Id', '')
+    if request_id:
+        logger.info(f'Bitbucket webhook request id: {request_id}')
+
+    # diagnostics:ping 是 Bitbucket webhook 配置页「Test connection」按钮发来的连通性探测。
+    # 它不携带业务数据，也不该触发审查，直接回 200 让配置页显示测试成功。
+    # 放在签名校验之前：探测事件没有副作用，没必要因为签名不匹配而让用户看到失败。
+    if event_type == BITBUCKET_PING_EVENT:
+        logger.info('Bitbucket diagnostics:ping received, replying pong.')
+        return jsonify({'message': 'pong'}), 200
+
+    # 校验 webhook 签名：配置了 BITBUCKET_WEBHOOK_SECRET 才校验。
+    # Bitbucket 在 webhook 设置了 Secret 后会带上 X-Hub-Signature 头，
+    # 不校验的话，任何知道 webhook 地址的人都能伪造 payload 触发审查并让机器人写评论。
+    webhook_secret = os.getenv('BITBUCKET_WEBHOOK_SECRET')
+    if webhook_secret:
+        signature = request.headers.get('X-Hub-Signature', '')
+        if not verify_webhook_signature(raw_body, signature, webhook_secret):
+            error_msg = 'Invalid Bitbucket webhook signature.'
+            logger.error(f'{error_msg} event_type={event_type}')
+            return jsonify({'message': error_msg}), 403
+    else:
+        logger.warn('BITBUCKET_WEBHOOK_SECRET is not configured, skipping Bitbucket webhook '
+                    'signature verification. Configure it in the Bitbucket webhook settings.')
+
+    # 获取 Bitbucket 配置
+    bitbucket_token = get_bitbucket_credentials()
+    if not bitbucket_token:
+        error_msg = ('Missing Bitbucket access token. Please set BITBUCKET_ACCESS_TOKEN environment variable '
+                     'to your Bitbucket personal access token.')
+        logger.error(error_msg)
+        return jsonify({'message': error_msg}), 400
+
+    # 获取 Bitbucket 实例地址
+    bitbucket_url = os.getenv('BITBUCKET_URL')
+    if not bitbucket_url:
+        bitbucket_url = extract_bitbucket_url(data)
+        if bitbucket_url:
+            logger.info(f'Extracted Bitbucket URL from payload: {bitbucket_url}')
+    if not bitbucket_url:
+        error_msg = ('Missing Bitbucket URL. Please set BITBUCKET_URL environment variable '
+                     'or ensure the repository link is present in the payload.')
+        logger.error(error_msg)
+        return jsonify({'message': error_msg}), 400
+
+    # URL Slug 用于队列隔离和日志标识
+    bitbucket_url_slug = slugify_url(bitbucket_url)
+
+    logger.info(f'Received Bitbucket event: {event_type}')
+    logger.info(f'Bitbucket URL: {bitbucket_url}')
+    logger.debug(f'Payload: {json.dumps(data, ensure_ascii=False)}')
+
+    if event_type == 'repo:refs_changed':
+        # Push 事件
+        handle_queue(handle_bitbucket_push_event, data, bitbucket_token, bitbucket_url,
+                     bitbucket_url_slug)
+        return jsonify(
+            {'message': f'Bitbucket request received(event_type={event_type}), will process asynchronously.'}), 200
+    elif event_type.startswith(BITBUCKET_PR_EVENT_PREFIX):
+        # PR 被删除：把对应的审查记录删掉
+        if event_type == BITBUCKET_PR_DELETED_EVENT:
+            handle_queue(handle_bitbucket_pull_request_deleted_event, data, bitbucket_token,
+                         bitbucket_url, bitbucket_url_slug)
+            return jsonify(
+                {'message': f'Bitbucket request received(event_type={event_type}), '
+                            'will process asynchronously.'}, 200)
+        # Pull Request 事件：仅在 PR 创建或源分支更新时审查
+        if event_type not in ('pr:opened', 'pr:from_ref_updated'):
+            logger.info(f'Bitbucket Pull Request event, action={event_type}, ignored.')
+            return jsonify(
+                {'message': f'Bitbucket Pull Request event {event_type} is ignored, '
+                            'only pr:opened and pr:from_ref_updated are supported.'}), 200
+        handle_queue(handle_bitbucket_pull_request_event, data, bitbucket_token, bitbucket_url,
+                     bitbucket_url_slug)
+        return jsonify(
+            {'message': f'Bitbucket request received(event_type={event_type}), will process asynchronously.'}), 200
+    else:
+        # 其它 Bitbucket 事件（如 repo:modified、repo:comment:added）无需审查，直接忽略
+        logger.info(f'Bitbucket event, action={event_type}, ignored.')
+        return jsonify(
+            {'message': f'Bitbucket event {event_type} is ignored, no code review required.'}), 200
+
+
+def start_server():
+    """启动 Web 服务。
+
+    配置检查只查环境变量和 provider，这两项是瞬时的。
+    LLM 连通性检查会发真实网络请求，网络不通时要等 1~2 分钟
+    （GitHub Copilot 先探测 endpoint、再换 token，各带 30 秒超时），
+    所以放到后台线程里跑，Web 服务立刻开始监听 —— 否则这段时间里
+    webhook 请求会直接连接失败（Bitbucket 的 Test connection 会报连接超时）。
+    """
+    check_config(check_connectivity=False)
+    threading.Thread(target=check_llm_connectivity, name='llm-connectivity-check',
+                     daemon=True).start()
+
     # 启动定时任务调度器
     setup_scheduler()
 
     # 启动Flask API服务
     port = int(os.environ.get('SERVER_PORT', 5001))
     api_app.run(host='0.0.0.0', port=port)
+
+
+if __name__ == '__main__':
+    start_server()

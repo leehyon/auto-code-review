@@ -5,6 +5,7 @@ from urllib.parse import urljoin
 import fnmatch
 import requests
 
+from src.utils.file_filter import supported_extensions as get_supported_extensions
 from src.utils.log import logger
 
 
@@ -14,7 +15,7 @@ def filter_changes(changes: list):
     复用 GitLab 的 filter_changes 逻辑（格式相同）
     '''
     # 从环境变量中获取支持的文件扩展名
-    supported_extensions = os.getenv('SUPPORTED_EXTENSIONS', '.java,.py,.php').split(',')
+    supported_extensions = get_supported_extensions()
 
     filter_deleted_files_changes = [change for change in changes if not change.get("deleted_file")]
 
@@ -80,6 +81,21 @@ class PushHandler:
         
         self.branch_name = self.webhook_data.get('ref', '').replace('refs/heads/', '')
         self.commit_list = self.webhook_data.get('commits', [])
+        self.repo_html_url = (repository.get('html_url') or '').rstrip('/')
+
+    @property
+    def push_url(self) -> str:
+        """本次推送 head commit 的浏览器链接（用于 Dashboard 的提交链接列）。
+
+        payload 里的 commits[].url 是 api/v1 地址，浏览器打不开，
+        所以用 repository.html_url + head commit sha 自己拼。
+        """
+        head_commit = self.webhook_data.get('head_commit') or {}
+        sha = self.webhook_data.get('after') or head_commit.get('id') or ''
+        html_url = getattr(self, 'repo_html_url', '')
+        if not sha or not html_url:
+            return ''
+        return f"{html_url}/commit/{sha}"
 
     def get_push_commits(self) -> list:
         # 检查是否为 Push 事件
@@ -783,11 +799,11 @@ class PushHandler:
         logger.info(f"Created new issue #{issue_number} for commit {commit_short}")
         return issue_number
 
-    def add_issue_comment(self, issue_number: int, review_result: str):
+    def add_issue_comment(self, issue_number: int, body: str):
         """
         在 Issue 中添加审核评论
         :param issue_number: Issue 编号
-        :param review_result: 审核结果文本
+        :param body: 评论正文（由调用方组装好）
         """
         if not self.repo_full_name:
             logger.error("repo_full_name is empty, cannot add comment")
@@ -810,7 +826,7 @@ class PushHandler:
         }
         
         data = {
-            'body': f"## AI Code Review Result\n\n{review_result}"
+            'body': body
         }
         
         logger.info(f"Attempting to add comment to issue #{issue_number} in {self.repo_full_name}")
@@ -1301,11 +1317,11 @@ class PullRequestHandler:
         logger.info(f"Created new issue #{issue_number} for PR #{self.pull_request_number}")
         return issue_number
 
-    def add_issue_comment(self, issue_number: int, review_result: str):
+    def add_issue_comment(self, issue_number: int, body: str):
         """
         在 Issue 中添加审核评论
         :param issue_number: Issue 编号
-        :param review_result: 审核结果文本
+        :param body: 评论正文（由调用方组装好）
         """
         if not self.repo_full_name:
             logger.error("repo_full_name is empty, cannot add comment")
@@ -1328,7 +1344,7 @@ class PullRequestHandler:
         }
         
         data = {
-            'body': f"## AI Code Review Result\n\n{review_result}"
+            'body': body
         }
         
         logger.info(f"Attempting to add comment to issue #{issue_number} in {self.repo_full_name}")
