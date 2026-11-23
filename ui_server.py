@@ -167,32 +167,47 @@ def get_review_stats():
         # 项目提交次数
         project_counts = df['project_name'].value_counts().reset_index()
         project_counts.columns = ['name', 'count']
-        
+
         # 项目平均分数
         project_scores = df.groupby('project_name')['score'].mean().reset_index()
         project_scores.columns = ['name', 'average_score']
-        
+
         # 人员提交次数
         author_counts = df['author'].value_counts().reset_index()
         author_counts.columns = ['name', 'count']
-        
+
+        # 只统计「PR 的所有 commit 都是提 PR 的人本人提交」的记录。
+        # PR 里混了别人的 commit 时，这份代码不是他写的 ——
+        # 这次审查的代码行数和评分都不该算在他名下
+        # （平台没给 per-commit 行数，算不出精确分摊）。
+        # 记录本身照常显示，只是不进入人员统计。
+        attributed_df = df
+        if 'author_sole_committer' in df.columns:
+            attributed_df = df[df['author_sole_committer'].fillna(1) == 1]
+
         # 人员平均分数
-        author_scores = df.groupby('author')['score'].mean().reset_index()
-        author_scores.columns = ['name', 'average_score']
-        
+        author_scores = []
+        if not attributed_df.empty:
+            author_scores_df = attributed_df.groupby('author')['score'].mean().reset_index()
+            author_scores_df.columns = ['name', 'average_score']
+            author_scores = author_scores_df.to_dict(orient='records')
+
         # 人员代码行数
         author_code_lines = []
-        if 'additions' in df.columns and 'deletions' in df.columns:
-            df['total_lines'] = df['additions'] + df['deletions']
-            author_code_lines_df = df.groupby('author')['total_lines'].sum().reset_index()
-            author_code_lines_df.columns = ['name', 'code_lines']
-            author_code_lines = author_code_lines_df.to_dict(orient='records')
+        if 'additions' in attributed_df.columns and 'deletions' in attributed_df.columns:
+            if not attributed_df.empty:
+                lines_df = attributed_df.copy()
+                lines_df['total_lines'] = lines_df['additions'] + lines_df['deletions']
+                author_code_lines_df = lines_df.groupby('author')['total_lines'].sum().reset_index()
+                author_code_lines_df.columns = ['name', 'code_lines']
+                author_code_lines = author_code_lines_df.to_dict(orient='records')
         
         return jsonify({
             'project_counts': project_counts.to_dict(orient='records'),
             'project_scores': project_scores.to_dict(orient='records'),
             'author_counts': author_counts.to_dict(orient='records'),
-            'author_scores': author_scores.to_dict(orient='records'),
+            # author_scores / author_code_lines 已经是 list（上面直接转的 records）
+            'author_scores': author_scores,
             'author_code_lines': author_code_lines
         })
     except Exception as e:

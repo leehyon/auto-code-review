@@ -58,7 +58,9 @@ def _record_failed_review(review_type: str, context: dict, error_message: str):
                 deletions=context.get('deletions', 0),
                 status='failed',
                 error_message=error_message,
-                platform=context.get('platform', ''))
+                platform=context.get('platform', ''),
+                pr_id=context.get('pr_id', ''),
+                pr_repo=context.get('pr_repo', ''))
             ReviewService.insert_mr_review_log(entity)
     except Exception:
         logger.error('Failed to record the failed review', exc_info=True)
@@ -777,6 +779,33 @@ def handle_gitea_pull_request_event(webhook_data: dict, gitea_token: str, gitea_
         logger.error('出现未知错误: %s', error_message)
 
 
+def handle_bitbucket_pull_request_deleted_event(webhook_data: dict, bitbucket_token: str, bitbucket_url: str,
+                                                bitbucket_url_slug: str):
+    '''PR 被删除时，把对应的审查记录从 Dashboard 上删掉。
+
+    PR 都没了，审查记录留着只是一条打不开的死链，
+    还继续占着统计里的提交次数和代码行数。
+
+    定位靠入库时存的 pr_id / pr_repo（不是靠 URL 字符串匹配）。
+    '''
+    try:
+        handler = BitbucketPullRequestHandler(webhook_data, bitbucket_token, bitbucket_url)
+        pr_id = str(getattr(handler, 'pull_request_id', '') or '')
+        pr_repo = getattr(handler, 'repository_slug', '') or ''
+        if not pr_id:
+            logger.warning('Bitbucket PR deleted event without PR id, ignored.')
+            return
+
+        deleted = ReviewService.delete_mr_review_log_by_pr(pr_id, pr_repo)
+        if deleted:
+            logger.info('Deleted %d review log(s) for deleted PR %s (%s)', deleted, pr_id, pr_repo)
+        else:
+            # 记录可能本来就不存在（PR 在本服务接管之前就删了）
+            logger.info('No review log found for deleted PR %s (%s)', pr_id, pr_repo)
+    except Exception as e:
+        logger.error(f'Failed to handle Bitbucket PR deleted event: {e}', exc_info=True)
+
+
 def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str, bitbucket_url: str,
                                         bitbucket_url_slug: str):
     '''
@@ -863,6 +892,9 @@ def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str
                 webhook_data=webhook_data,
                 additions=additions,
                 deletions=deletions,
+                # PR 的 id 和仓库 slug：PR 被删除时靠这两个字段删记录
+                pr_id=str(handler.pull_request_id or ''),
+                pr_repo=handler.repository_slug or '',
             ))
 
     except Exception as e:
@@ -879,6 +911,8 @@ def handle_bitbucket_pull_request_event(webhook_data: dict, bitbucket_token: str
             'webhook_data': webhook_data,
             'url_slug': bitbucket_url_slug,
             'platform': 'bitbucket',
+            'pr_id': str(getattr(handler, 'pull_request_id', '') or '') if handler else '',
+            'pr_repo': getattr(handler, 'repository_slug', '') if handler else '',
         }, error_message)
         notifier.send_notification(content=error_message)
         logger.error('出现未知错误: %s', error_message)

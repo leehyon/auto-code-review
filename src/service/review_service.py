@@ -33,6 +33,9 @@ class ReviewService:
                         error_message TEXT,
                         platform VARCHAR(32),
                         webhook_data LONGTEXT,
+                        author_sole_committer INT DEFAULT 1,
+                        pr_id VARCHAR(64),
+                        pr_repo VARCHAR(255),
                         INDEX idx_author (author),
                         INDEX idx_project_name (project_name),
                         INDEX idx_updated_at (updated_at)
@@ -56,7 +59,10 @@ class ReviewService:
                         status TEXT DEFAULT 'success',
                         error_message TEXT,
                         platform TEXT,
-                        webhook_data TEXT
+                        webhook_data TEXT,
+                        author_sole_committer INTEGER DEFAULT 1,
+                        pr_id TEXT,
+                        pr_repo TEXT
                     )
                 '''
         elif table_name == "push_review_log":
@@ -78,6 +84,9 @@ class ReviewService:
                         error_message TEXT,
                         platform VARCHAR(32),
                         webhook_data LONGTEXT,
+                        author_sole_committer INT DEFAULT 1,
+                        pr_id VARCHAR(64),
+                        pr_repo VARCHAR(255),
                         INDEX idx_author (author),
                         INDEX idx_project_name (project_name),
                         INDEX idx_updated_at (updated_at)
@@ -100,10 +109,42 @@ class ReviewService:
                         status TEXT DEFAULT 'success',
                         error_message TEXT,
                         platform TEXT,
-                        webhook_data TEXT
+                        webhook_data TEXT,
+                        author_sole_committer INTEGER DEFAULT 1,
+                        pr_id TEXT,
+                        pr_repo TEXT
                     )
                 '''
         return ""
+
+    @staticmethod
+    def _rename_legacy_column(conn, table: str):
+        """把旧列名 code_lines_attributed 改名为 author_sole_committer。
+
+        早期版本这个标记只管代码行数，名字就叫 code_lines_attributed；
+        现在它同时管行数和评分，名字改成 author_sole_committer ——
+        名字不改的话，以后读代码的人会以为评分不受这个标记影响。
+
+        必须保留原值：老记录已经被回填脚本判过（哪些是本人提交），
+        重新加一列的话默认值 1 会把它们全变成「本人提交」。
+        """
+        try:
+            conn.execute(
+                f"ALTER TABLE {table} RENAME COLUMN "
+                "code_lines_attributed TO author_sole_committer")
+            print(f"Renamed column code_lines_attributed -> "
+                  f"author_sole_committer on {table}")
+        except Exception as rename_error:
+            # 某些数据库版本不支持 RENAME COLUMN：退回加新列 + 搬数据
+            print(f"RENAME COLUMN failed on {table} ({rename_error}), "
+                  "falling back to ADD + UPDATE")
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN "
+                "author_sole_committer INTEGER DEFAULT 1")
+            conn.execute(
+                f"UPDATE {table} SET author_sole_committer = code_lines_attributed")
+            conn.execute(
+                f"ALTER TABLE {table} DROP COLUMN code_lines_attributed")
 
     @staticmethod
     def init_db():
@@ -126,6 +167,14 @@ class ReviewService:
                         ("error_message", "TEXT"),
                         ("platform", "TEXT"),
                         ("webhook_data", "TEXT"),
+                        # PR 的所有 commit 是否都由提 PR 的人本人提交。
+                        # 不是的话这次的行数和评分都不算在这个人名下。
+                        # DEFAULT 1 是为了兼容旧数据：老记录没有这个字段，
+                        # 它们照旧计入（老数据无法追溯 commit 作者）。
+                        ("author_sole_committer", "INTEGER DEFAULT 1"),
+                        # PR 的 id 和仓库 slug。PR 被删除时按这两个字段定位记录。
+                        ("pr_id", "TEXT"),
+                        ("pr_repo", "TEXT"),
                     ],
                     "push_review_log": [
                         ("additions", "INTEGER DEFAULT 0"),
@@ -135,10 +184,18 @@ class ReviewService:
                         ("error_message", "TEXT"),
                         ("platform", "TEXT"),
                         ("webhook_data", "TEXT"),
+                        ("author_sole_committer", "INTEGER DEFAULT 1"),
                     ],
                 }
                 for table, columns in table_columns.items():
                     for column, ddl in columns:
+                        # 旧列名 code_lines_attributed 要先改名再补列 ——
+                        # 顺序反了的话这里会先加一个默认值 1 的新列，
+                        # 后面改名就跳过了，老记录全被误判成「本人提交」。
+                        if column == "author_sole_committer" and \
+                                conn.column_exists(table, "code_lines_attributed"):
+                            ReviewService._rename_legacy_column(conn, table)
+                            continue
                         if not conn.column_exists(table, column):
                             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
@@ -163,8 +220,9 @@ class ReviewService:
                 conn.execute('''
                     INSERT INTO mr_review_log (project_name, author, source_branch, target_branch,
                         updated_at, commit_messages, score, url, review_result, additions, deletions,
-                        status, error_message, platform, webhook_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        status, error_message, platform, webhook_data, author_sole_committer,
+                        pr_id, pr_repo)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (entity.project_name, entity.author, entity.source_branch,
                       entity.target_branch, entity.updated_at, entity.commit_messages,
                       entity.score, entity.url, extract_summary(entity.review_result),
@@ -172,11 +230,47 @@ class ReviewService:
                       getattr(entity, 'status', 'success'),
                       getattr(entity, 'error_message', ''),
                       getattr(entity, 'platform', ''),
-                      ReviewService._dump_webhook_data(getattr(entity, 'webhook_data', None))))
+                      ReviewService._dump_webhook_data(getattr(entity, 'webhook_data', None)),
+                      1 if getattr(entity, 'author_sole_committer', True) else 0,
+                      getattr(entity, 'pr_id', ''),
+                      getattr(entity, 'pr_repo', '')))
                 conn.commit()
                 print(f"[ReviewService] MR review log inserted successfully: {entity.project_name} by {entity.author}")
         except Exception as e:
             logger.error(f"[ReviewService] Error inserting MR review log: {e}", exc_info=True)
+
+    @staticmethod
+    def delete_mr_review_log_by_pr(pr_id: str, pr_repo: str = '') -> int:
+        """删掉某个 PR 对应的审查记录，返回删掉的条数。
+
+        PR 被删除时 Bitbucket 会发 pr:deleted 事件。
+        Dashboard 上的记录是对 PR 的审查结果，PR 都没了，记录留着
+        只会变成一条打不开的死链，还继续占着统计里的提交次数和行数。
+
+        定位靠入库时存的 pr_id / pr_repo，不靠 url 字符串匹配 ——
+        URL 里带不带 /overview、带不带 query 都不影响。
+
+        pr_repo 为空时只按 pr_id 删（跨仓库 PR 的记录可能没有仓库 slug）。
+        """
+        if not pr_id:
+            return 0
+        try:
+            with get_db_connection() as conn:
+                if pr_repo:
+                    query = "DELETE FROM mr_review_log WHERE pr_id = ? AND pr_repo = ?"
+                    params = (str(pr_id), pr_repo)
+                else:
+                    query = "DELETE FROM mr_review_log WHERE pr_id = ?"
+                    params = (str(pr_id),)
+                cursor = conn.execute(query, params)
+                deleted = cursor.rowcount or 0
+                conn.commit()
+                if deleted:
+                    logger.info(f"[ReviewService] Deleted {deleted} review log(s) for deleted PR {pr_id}")
+                return deleted
+        except Exception as e:
+            logger.error(f"[ReviewService] Error deleting review log for PR {pr_id}: {e}", exc_info=True)
+            return 0
 
     @staticmethod
     def _author_normalized_sql() -> str:
@@ -218,7 +312,7 @@ class ReviewService:
                 query = """
                     SELECT id, project_name, author, source_branch, target_branch, updated_at,
                            commit_messages, score, url, additions, deletions,
-                           status, error_message, platform
+                           status, error_message, platform, author_sole_committer
                     FROM mr_review_log
                     WHERE 1=1
                 """
@@ -269,8 +363,8 @@ class ReviewService:
                 conn.execute('''
                     INSERT INTO push_review_log (project_name, author, branch, updated_at,
                         commit_messages, score, review_result, additions, deletions, url,
-                        status, error_message, platform, webhook_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        status, error_message, platform, webhook_data, author_sole_committer)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (entity.project_name, entity.author, entity.branch,
                       entity.updated_at, entity.commit_messages, entity.score,
                       extract_summary(entity.review_result),
@@ -279,7 +373,8 @@ class ReviewService:
                       getattr(entity, 'status', 'success'),
                       getattr(entity, 'error_message', ''),
                       getattr(entity, 'platform', ''),
-                      ReviewService._dump_webhook_data(getattr(entity, 'webhook_data', None))))
+                      ReviewService._dump_webhook_data(getattr(entity, 'webhook_data', None)),
+                      1 if getattr(entity, 'author_sole_committer', True) else 0))
                 conn.commit()
                 print(f"[ReviewService] Push review log inserted successfully: {entity.project_name} by {entity.author}")
         except Exception as e:
@@ -417,7 +512,7 @@ class ReviewService:
                 query = """
                     SELECT id, project_name, author, branch, updated_at, commit_messages,
                            score, additions, deletions, url,
-                           status, error_message, platform
+                           status, error_message, platform, author_sole_committer
                     FROM push_review_log
                     WHERE 1=1
                 """

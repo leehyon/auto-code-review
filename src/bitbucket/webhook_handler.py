@@ -34,6 +34,11 @@ MAX_PUSH_COMMITS = 20
 MAX_PUSH_FILES = 100
 # 需要触发代码审查的 PR 事件
 PR_REVIEW_EVENTS = ('pr:opened', 'pr:from_ref_updated')
+# PR 被删除的事件。PR 没了，Dashboard 上对应的审查记录也没意义
+# （链接打不开，还继续占着统计），收到这个事件就把记录删掉。
+PR_DELETED_EVENT = 'pr:deleted'
+# 需要解析 PR 信息的全部事件（审查事件 + 删除事件）
+PR_EVENTS_WITH_PAYLOAD = PR_REVIEW_EVENTS + (PR_DELETED_EVENT,)
 # Bitbucket webhook 签名支持的哈希算法（WebSub 规范，Bitbucket 目前用 sha256）
 WEBHOOK_SIGNATURE_ALGORITHMS = {
     'sha1': hashlib.sha1,
@@ -514,7 +519,7 @@ class PullRequestHandler:
 
     def parse_event_type(self):
         self.event_type = self.webhook_data.get('eventKey', None)
-        if self.event_type in PR_REVIEW_EVENTS:
+        if self.event_type in PR_EVENTS_WITH_PAYLOAD:
             self.parse_pull_request_event()
 
     def parse_pull_request_event(self):

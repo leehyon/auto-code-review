@@ -20,7 +20,8 @@ from src.gitlab.webhook_handler import slugify_url
 from src.bitbucket.webhook_handler import verify_webhook_signature
 from src.queue.worker import handle_merge_request_event, handle_push_event, handle_github_pull_request_event, \
     handle_github_push_event, handle_gitea_push_event, handle_gitea_pull_request_event, \
-    handle_bitbucket_push_event, handle_bitbucket_pull_request_event
+    handle_bitbucket_push_event, handle_bitbucket_pull_request_event, \
+    handle_bitbucket_pull_request_deleted_event
 from src.service.review_service import ReviewService
 from src.utils.messaging import notifier
 from src.utils.log import logger
@@ -491,6 +492,9 @@ def handle_gitea_webhook(event_type, data):
 # 注意：Bitbucket Cloud 使用的是 pullrequest: / repo:push，与下面的取值不同，不会被误判
 BITBUCKET_PR_EVENT_PREFIX = 'pr:'
 BITBUCKET_PING_EVENT = 'diagnostics:ping'
+# PR 被删除的事件。PR 没了，Dashboard 上对应的审查记录也没意义，
+# 收到这个事件就把记录删掉。
+BITBUCKET_PR_DELETED_EVENT = 'pr:deleted'
 BITBUCKET_REPO_EVENTS = (
     'repo:refs_changed',  # push
     'repo:modified',
@@ -617,6 +621,13 @@ def handle_bitbucket_webhook(event_type, data, raw_body: bytes = b''):
         return jsonify(
             {'message': f'Bitbucket request received(event_type={event_type}), will process asynchronously.'}), 200
     elif event_type.startswith(BITBUCKET_PR_EVENT_PREFIX):
+        # PR 被删除：把对应的审查记录删掉
+        if event_type == BITBUCKET_PR_DELETED_EVENT:
+            handle_queue(handle_bitbucket_pull_request_deleted_event, data, bitbucket_token,
+                         bitbucket_url, bitbucket_url_slug)
+            return jsonify(
+                {'message': f'Bitbucket request received(event_type={event_type}), '
+                            'will process asynchronously.'}, 200)
         # Pull Request 事件：仅在 PR 创建或源分支更新时审查
         if event_type not in ('pr:opened', 'pr:from_ref_updated'):
             logger.info(f'Bitbucket Pull Request event, action={event_type}, ignored.')

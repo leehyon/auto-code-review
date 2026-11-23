@@ -22,6 +22,54 @@ def normalize_author(author):
     return author
 
 
+def _commit_author(commit):
+    """取一个 commit 的作者名。
+
+    各平台的统一结构里作者字段名不一样：
+      - Bitbucket / GitHub / Gitea 用 author_name
+      - GitLab / Gitea 用 author
+    取不到就返回空串（调用方按「拿不到作者」处理）。
+    """
+    if not isinstance(commit, dict):
+        return ''
+    for key in ('author_name', 'author'):
+        value = commit.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ''
+
+
+def commit_authors(commits) -> set:
+    """取一组 commit 的作者集合（已归整）。
+
+    合并提交也计入。Bitbucket 的 PR 合并提交（标题是「Pull request #N: ...」）
+    的 author 是**代码的捐献者**，不是执行合并的那个人 ——
+    排除它就等于把别人的代码记到提 PR 的人头上。
+    """
+    authors = set()
+    for commit in commits or []:
+        name = normalize_author(_commit_author(commit))
+        if name:
+            authors.add(name)
+    return authors
+
+
+def is_author_sole_committer(pr_author, commits) -> bool:
+    """判断 PR 的所有 commit 是不是都由提 PR 的人本人提交。
+
+    口径：**所有** commit 的作者都是提 PR 的人本人，才算一致。
+    只要有任何一个 commit 来自别人，这次的 +N -M 和评分就不知道该算到谁头上
+    （Bitbucket 没有 per-commit 的行数接口，算不出精确分摊），
+    整块不算在提 PR 的人名下，比错记在一个人头上更诚实。
+
+    拿不到 commit 作者时按「无法证明是本人」处理 —— 不算。
+    """
+    authors = commit_authors(commits)
+    if not authors:
+        return False
+    return authors == {normalize_author(pr_author)}
+
+
 # 合并提交的标题特征。各平台的措辞不同，兜底用这些模式判断。
 _MERGE_SUBJECT_RE = re.compile(
     r'^merge\s+(branch|pull request|remote-tracking branch|tag|commit|revert)\b',
@@ -93,7 +141,7 @@ class MergeRequestReviewEntity:
     def __init__(self, project_name: str, author: str, source_branch: str, target_branch: str, updated_at: int,
                  commits: list, score: float, url: str, review_result: str, url_slug: str, webhook_data: dict,
                  additions: int, deletions: int, status: str = 'success', error_message: str = '',
-                 platform: str = ''):
+                 platform: str = '', pr_id: str = '', pr_repo: str = ''):
         # 项目名统一小写：各平台给的名称大小写不一致（Bitbucket 的 display name
         # 是大写，slug 是小写；GitLab 用的是人类可读名），不统一的话同一个项目
         # 会在统计和筛选里裂成好几项。
@@ -112,12 +160,21 @@ class MergeRequestReviewEntity:
         self.webhook_data = webhook_data
         self.additions = additions
         self.deletions = deletions
+        # PR 的所有 commit 是否都由提 PR 的人本人提交。
+        # 不是的话，这次的 +N -M 和评分都不算在这个人的名下 ——
+        # PR 里混了别人的 commit，这份代码不是他写的。
+        self.author_sole_committer = is_author_sole_committer(author, commits)
         # success = 审查完成；failed = 审查没跑完（超时/网络错误等）。
         # 失败的记录不出现在 PR 上，但会进 Dashboard 供人工重试。
         self.status = status
         self.error_message = error_message
         # 来源平台，重试时用来分发到对应的处理函数
         self.platform = platform
+        # PR 的 id 和仓库 slug。
+        # PR 被删除时 Bitbucket 会发 pr:deleted 事件，靠这两个字段
+        # 找到对应的记录删掉 —— 靠 URL 字符串匹配太脆弱。
+        self.pr_id = str(pr_id or '')
+        self.pr_repo = pr_repo or ''
 
     @property
     def commit_messages(self):
@@ -146,6 +203,9 @@ class PushReviewEntity:
         self.webhook_data = webhook_data
         self.additions = additions
         self.deletions = deletions
+        # 同 MergeRequestReviewEntity：推送里混了别人的 commit 时，
+        # 这 +N -M 和评分都不计入任何人的名下。
+        self.author_sole_committer = is_author_sole_committer(author, commits)
         # 本次推送 head commit 的浏览器链接（Dashboard 的提交链接列用）
         self.url = url
         # success = 审查完成；failed = 审查没跑完（超时/网络错误等）
